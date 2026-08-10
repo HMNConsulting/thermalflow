@@ -1,0 +1,1490 @@
+From 2f83b0fff3a33d5b02d7c58ec8cb42be9f8c65cf Mon Sep 17 00:00:00 2001
+From: root <root@spawn-jasko-hermes.us-central1-a.c.jasko-hermes.internal>
+Date: Mon, 10 Aug 2026 04:00:25 +0000
+Subject: [PATCH] feat: add input validation, queue persistence, printer
+ status, retry logic, templates, QR/barcode endpoints, rate limiting,
+ TypeScript migration, and task capture API
+
+---
+ package.json                        |   5 +-
+ print-server-ts/package.json        |  29 ++
+ print-server-ts/src/print-server.ts | 528 +++++++++++++++++++++++++
+ print-server-ts/tsconfig.json       |  19 +
+ print-server.js                     | 574 +++++++++++++++++++++++-----
+ server.js                           | 110 ++++++
+ 6 files changed, 1165 insertions(+), 100 deletions(-)
+ create mode 100644 print-server-ts/package.json
+ create mode 100644 print-server-ts/src/print-server.ts
+ create mode 100644 print-server-ts/tsconfig.json
+
+diff --git a/package.json b/package.json
+index b35f0a8..6ccd510 100644
+--- a/package.json
++++ b/package.json
+@@ -35,7 +35,10 @@
+     "socket.io-client": "^4.8.3",
+     "sonner": "^2.0.7",
+     "tailwind-merge": "^3.4.0",
+-    "zustand": "^5.0.11"
++    "zustand": "^5.0.11",
++    "express-rate-limit": "^8.2.1",
++    "qrcode": "^1.5.4",
++    "winston": "^3.17.0"
+   },
+   "devDependencies": {
+     "@tailwindcss/postcss": "^4",
+diff --git a/print-server-ts/package.json b/print-server-ts/package.json
+new file mode 100644
+index 0000000..2ecdaaf
+--- /dev/null
++++ b/print-server-ts/package.json
+@@ -0,0 +1,29 @@
++{
++  "name": "thermalflow-print-server",
++  "version": "1.0.0",
++  "description": "ThermalFlow Print Server - TypeScript",
++  "main": "dist/print-server.js",
++  "scripts": {
++    "build": "tsc",
++    "start": "node dist/print-server.js",
++    "dev": "ts-node src/print-server.ts"
++  },
++  "dependencies": {
++    "express": "^5.2.1",
++    "cors": "^2.8.6",
++    "body-parser": "^2.2.2",
++    "escpos": "^3.0.0-alpha.6",
++    "escpos-usb": "^3.0.0-alpha.4",
++    "express-rate-limit": "^8.2.1",
++    "qrcode": "^1.5.4",
++    "winston": "^3.17.0"
++  },
++  "devDependencies": {
++    "@types/express": "^5.0.0",
++    "@types/cors": "^2.8.17",
++    "@types/body-parser": "^1.19.5",
++    "@types/qrcode": "^1.5.5",
++    "typescript": "^5",
++    "ts-node": "^10.9.2"
++  }
++}
+\ No newline at end of file
+diff --git a/print-server-ts/src/print-server.ts b/print-server-ts/src/print-server.ts
+new file mode 100644
+index 0000000..3c495c3
+--- /dev/null
++++ b/print-server-ts/src/print-server.ts
+@@ -0,0 +1,528 @@
++import express, { Request, Response } from 'express';
++import cors from 'cors';
++import bodyParser from 'body-parser';
++import fs from 'fs';
++import path from 'path';
++import rateLimit from 'express-rate-limit';
++import QRCode from 'qrcode';
++import winston from 'winston';
++
++// escpos types are not available, using any
++const escpos: any = require('escpos');
++
++// --- Types ---
++interface PrinterDevice {
++    deviceDescriptor: {
++        idVendor: number;
++        idProduct: number;
++    };
++}
++
++interface PrintJobPayload {
++    title?: string;
++    date?: string;
++    tasks?: string[];
++    image?: string;
++    template?: string;
++    taskName?: string;
++    url?: string;
++    data?: string;
++    format?: string;
++}
++
++interface QueueItem {
++    job: () => Promise<void>;
++    resolve: () => void;
++    reject: (err: Error) => void;
++    type: 'manifest' | 'single' | 'qr' | 'barcode';
++    payload: PrintJobPayload;
++    retries: number;
++}
++
++interface PrinterStatus {
++    connected: boolean;
++    printerFound?: boolean;
++    vendorId?: string | null;
++    productId?: string | null;
++    availablePrinters?: number;
++    error?: string;
++}
++
++interface ImageValidationResult {
++    valid: boolean;
++    error?: string;
++    buffer?: Buffer;
++}
++
++// --- Structured Logging ---
++const logger = winston.createLogger({
++    level: process.env.LOG_LEVEL || 'info',
++    format: winston.format.combine(
++        winston.format.timestamp(),
++        winston.format.errors({ stack: true }),
++        winston.format.json()
++    ),
++    defaultMeta: { service: 'thermalflow-print-server' },
++    transports: [
++        new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
++        new winston.transports.File({ filename: 'logs/combined.log' }),
++        new winston.transports.Console({
++            format: winston.format.combine(
++                winston.format.colorize(),
++                winston.format.simple()
++            )
++        })
++    ]
++});
++
++// --- Compatibility Fix ---
++const usbModule: any = require('usb');
++if (!usbModule.on && usbModule.usb && usbModule.usb.on) {
++    logger.info("[Compatibility] Patching 'usb' module for escpos-usb...");
++    const target = usbModule.usb;
++    usbModule.on = (...args: any[]) => target.on(...args);
++    usbModule.emit = (...args: any[]) => target.emit(...args);
++    usbModule.once = (...args: any[]) => target.once(...args);
++    usbModule.removeListener = (...args: any[]) => target.removeListener(...args);
++    usbModule.removeAllListeners = (event: string) => {
++        if (event === 'detach') return;
++        target.removeAllListeners(event);
++    };
++    if (!usbModule.findByIds && target.findByIds) {
++        usbModule.findByIds = (...args: any[]) => target.findByIds(...args);
++    }
++}
++
++// Load USB adapter
++try {
++    escpos.USB = require('escpos-usb');
++} catch (e) {
++    logger.warn("escpos-usb NOT FOUND");
++}
++
++const app = express();
++const port = process.env.PRINT_SERVER_PORT || 3001;
++
++// --- Rate Limiting ---
++const limiter = rateLimit({
++    windowMs: 15 * 60 * 1000,
++    max: 100,
++    message: { error: 'Too many requests, please try again later.' },
++    standardHeaders: true,
++    legacyHeaders: false
++});
++
++app.use(cors());
++app.use(bodyParser.json({ limit: '5mb' }));
++app.use(limiter);
++
++// --- Queue Persistence ---
++const QUEUE_FILE = path.join(__dirname, '..', 'print-queue.json');
++
++function saveQueue(): void {
++    try {
++        const data = printQueue.map(item => ({
++            type: item.type,
++            payload: item.payload,
++            retries: item.retries
++        }));
++        fs.writeFileSync(QUEUE_FILE, JSON.stringify(data, null, 2));
++    } catch (e) {
++        logger.error("Failed to save queue:", e);
++    }
++}
++
++function loadQueue(): any[] {
++    try {
++        if (fs.existsSync(QUEUE_FILE)) {
++            const raw = fs.readFileSync(QUEUE_FILE, 'utf8');
++            return JSON.parse(raw);
++        }
++    } catch (e) {
++        logger.error("Failed to load queue:", e);
++    }
++    return [];
++}
++
++// --- Printer Status ---
++function checkPrinterStatus(): Promise<PrinterStatus> {
++    return new Promise((resolve) => {
++        try {
++            if (typeof escpos.USB === 'undefined') {
++                return resolve({ connected: false, error: 'escpos-usb not loaded' });
++            }
++            const printers: PrinterDevice[] = escpos.USB.findPrinter();
++            if (printers && printers.length > 0) {
++                const target = printers.find(p =>
++                    p.deviceDescriptor.idVendor === 0x4b8 &&
++                    p.deviceDescriptor.idProduct === 0xe28
++                );
++                resolve({
++                    connected: true,
++                    printerFound: !!target,
++                    vendorId: target ? '0x4b8' : null,
++                    productId: target ? '0xe28' : null,
++                    availablePrinters: printers.length
++                });
++            } else {
++                resolve({ connected: false, error: 'No USB printers found' });
++            }
++        } catch (e: any) {
++            resolve({ connected: false, error: e.message });
++        }
++    });
++}
++
++// --- Print Queue ---
++let printQueue: QueueItem[] = [];
++let isProcessingQueue = false;
++
++function processQueue(): void {
++    if (isProcessingQueue || printQueue.length === 0) {
++        if (printQueue.length === 0) saveQueue();
++        return;
++    }
++    isProcessingQueue = true;
++
++    const item = printQueue.shift()!;
++    const { job, resolve, reject, type, payload, retries } = item;
++
++    job()
++        .then(() => {
++            logger.info(`Print job completed: ${type}`, { payload: sanitizePayload(payload) });
++            resolve();
++        })
++        .catch((err: Error) => {
++            logger.error(`Print job failed: ${type}`, { error: err.message, retries });
++            if (retries < 2) {
++                const delay = Math.pow(2, retries) * 500;
++                logger.info(`Retrying in ${delay}ms... (attempt ${retries + 1}/3)`);
++                setTimeout(() => {
++                    printQueue.unshift({ ...item, retries: retries + 1 });
++                    isProcessingQueue = false;
++                    processQueue();
++                }, delay);
++                return;
++            }
++            reject(err);
++        })
++        .finally(() => {
++            isProcessingQueue = false;
++            saveQueue();
++            setTimeout(processQueue, 1000);
++        });
++}
++
++function sanitizePayload(payload: PrintJobPayload): PrintJobPayload {
++    const sanitized = { ...payload };
++    if (sanitized.image) sanitized.image = '[BASE64_IMAGE_REDACTED]';
++    return sanitized;
++}
++
++function addToQueue(job: () => Promise<void>, type: QueueItem['type'], payload: PrintJobPayload): Promise<void> {
++    return new Promise((resolve, reject) => {
++        printQueue.push({ job, resolve, reject, type, payload, retries: 0 });
++        saveQueue();
++        processQueue();
++    });
++}
++
++// --- Image Validation ---
++function validateImage(imageStr?: string): ImageValidationResult {
++    if (!imageStr) return { valid: true };
++    if (typeof imageStr !== 'string') return { valid: false, error: 'Image must be a string' };
++    if (imageStr.length > 2_000_000) return { valid: false, error: 'Image too large (max 2MB)' };
++
++    const match = imageStr.match(/^data:image\/(png|jpeg|jpg|gif);base64,(.+)$/);
++    if (!match) return { valid: false, error: 'Invalid image data URI' };
++
++    const format = match[1];
++    if (format !== 'png') return { valid: false, error: `Unsupported format: ${format}. Only PNG.` };
++
++    try {
++        const buffer = Buffer.from(match[2], 'base64');
++        if (buffer.length === 0) return { valid: false, error: 'Empty image buffer' };
++        if (buffer[0] !== 0x89 || buffer[1] !== 0x50) return { valid: false, error: 'Invalid PNG signature' };
++        return { valid: true, buffer };
++    } catch (e: any) {
++        return { valid: false, error: `Decode failed: ${e.message}` };
++    }
++}
++
++// --- Templates ---
++type TemplateFunction = (printer: any, title?: string, date?: string, tasks?: string[], imageStr?: string) => void;
++
++const templates: Record<string, TemplateFunction> = {
++    default: (printer, title, date, tasks) => {
++        printer.font('a').align('ct').style('b').size(1, 1)
++            .text(title || 'THERMALFLOW')
++            .size(0, 0).style('normal')
++            .text(date || new Date().toLocaleString())
++            .text('--------------------------------').align('lt');
++        tasks?.forEach(t => printer.text(t));
++    },
++    minimal: (printer, title, _date, tasks) => {
++        printer.font('a').align('lt').text(title || 'NOTE').text('---');
++        tasks?.forEach(t => printer.text(`• ${t}`));
++    },
++    receipt: (printer, title, date, tasks) => {
++        printer.font('a').align('ct').style('b').text(title || 'RECEIPT')
++            .style('normal').text(date || new Date().toLocaleString())
++            .text('================================').align('lt');
++        tasks?.forEach(t => printer.text(`  ${t}`));
++        printer.text('================================');
++    }
++};
++
++function getTemplate(name?: string): TemplateFunction {
++    return templates[name || 'default'] || templates.default;
++}
++
++// --- Print Functions ---
++function performPrint(title?: string, date?: string, tasks?: string[], imageStr?: string, templateName?: string): Promise<void> {
++    return new Promise((resolve, reject) => {
++        try {
++            let device: any;
++            const printers: PrinterDevice[] = escpos.USB.findPrinter();
++
++            if (printers?.length > 0) {
++                const target = printers.find(p =>
++                    p.deviceDescriptor.idVendor === 0x4b8 && p.deviceDescriptor.idProduct === 0xe28
++                );
++                device = new escpos.USB(target || printers[0]);
++            } else {
++                device = new escpos.USB(0x4b8, 0xe28);
++            }
++
++            const printer = new escpos.Printer(device, { encoding: "GB18030" });
++
++            device.open((error: Error | null) => {
++                if (error) {
++                    logger.error("Printer Connection Error:", error);
++                    return reject(new Error('Printer not ready'));
++                }
++
++                if (imageStr) {
++                    const validation = validateImage(imageStr);
++                    if (!validation.valid) {
++                        device.close();
++                        return reject(new Error(validation.error));
++                    }
++                }
++
++                const template = getTemplate(templateName);
++
++                if (imageStr) {
++                    const base64Data = imageStr.replace(/^data:image\/png;base64,/, "");
++                    const buffer = Buffer.from(base64Data, 'base64');
++                    escpos.Image.load(buffer, 'image/png', (img: any) => {
++                        if (!img) return closePrinter();
++                        template(printer, title, date, tasks, imageStr);
++                        printer.align('ct').raster(img)
++                            .text('--------------------------------').feed(1).align('ct')
++                            .text('END OF TRANSMISSION').feed(3).cut()
++                            .close(() => resolve());
++                    });
++                    return;
++                }
++
++                template(printer, title, date, tasks, imageStr);
++                closePrinter();
++
++                function closePrinter() {
++                    printer.text('--------------------------------').feed(1).align('ct')
++                        .text('END OF TRANSMISSION').feed(3).cut()
++                        .close(() => resolve());
++                }
++            });
++        } catch (e: any) {
++            logger.error("USB Init Failed:", e.message);
++            reject(new Error('Printer device not found'));
++        }
++    });
++}
++
++function performSinglePrint(taskName: string): Promise<void> {
++    return new Promise((resolve, reject) => {
++        try {
++            let device: any;
++            const printers: PrinterDevice[] = escpos.USB.findPrinter();
++            if (printers?.length > 0) {
++                const target = printers.find(p =>
++                    p.deviceDescriptor.idVendor === 0x4b8 && p.deviceDescriptor.idProduct === 0xe28
++                );
++                device = new escpos.USB(target || printers[0]);
++            } else {
++                device = new escpos.USB(0x4b8, 0xe28);
++            }
++
++            const printer = new escpos.Printer(device, { encoding: "GB18030" });
++
++            device.open((error: Error | null) => {
++                if (error) return reject(new Error('Printer not ready'));
++                printer.font('a').align('ct').style('b').size(1, 1)
++                    .text('------------------------').feed(1).size(2, 2)
++                    .text(taskName).size(1, 1).feed(1)
++                    .text('------------------------').feed(2).cut()
++                    .close(() => resolve());
++            });
++        } catch (e: any) {
++            reject(new Error('Printer device not found'));
++        }
++    });
++}
++
++function performBarcodePrint(data: string, format: string, title?: string): Promise<void> {
++    return new Promise((resolve, reject) => {
++        try {
++            let device: any;
++            const printers: PrinterDevice[] = escpos.USB.findPrinter();
++            if (printers?.length > 0) {
++                const target = printers.find(p =>
++                    p.deviceDescriptor.idVendor === 0x4b8 && p.deviceDescriptor.idProduct === 0xe28
++                );
++                device = new escpos.USB(target || printers[0]);
++            } else {
++                device = new escpos.USB(0x4b8, 0xe28);
++            }
++
++            const printer = new escpos.Printer(device, { encoding: "GB18030" });
++
++            device.open((error: Error | null) => {
++                if (error) return reject(new Error('Printer not ready'));
++                printer.font('a').align('ct').style('b')
++                    .text(title || 'BARCODE').style('normal')
++                    .text('--------------------------------');
++                try {
++                    printer.barcode(data, format, { width: 2, height: 100 });
++                } catch (e) {
++                    printer.text(data);
++                }
++                printer.text('--------------------------------').feed(3).cut()
++                    .close(() => resolve());
++            });
++        } catch (e: any) {
++            reject(new Error('Printer device not found'));
++        }
++    });
++}
++
++// --- API Endpoints ---
++
++app.get('/health', async (_req: Request, res: Response) => {
++    const printerStatus = await checkPrinterStatus();
++    res.json({
++        status: 'alive',
++        usbAvailable: typeof escpos.USB !== 'undefined',
++        printer: printerStatus,
++        queueLength: printQueue.length,
++        message: `Printer server is running on port ${port}`
++    });
++});
++
++app.get('/printer-status', async (_req: Request, res: Response) => {
++    res.json(await checkPrinterStatus());
++});
++
++app.get('/queue', (_req: Request, res: Response) => {
++    res.json({
++        length: printQueue.length,
++        isProcessing: isProcessingQueue,
++        jobs: printQueue.map(j => ({ type: j.type, retries: j.retries }))
++    });
++});
++
++app.post('/print', async (req: Request, res: Response) => {
++    const { title, date, tasks, image, template }: PrintJobPayload = req.body;
++
++    if (title && (typeof title !== 'string' || title.length > 100)) {
++        return res.status(400).json({ error: 'Invalid title' });
++    }
++    if (date && (typeof date !== 'string' || date.length > 50)) {
++        return res.status(400).json({ error: 'Invalid date' });
++    }
++    if (tasks && (!Array.isArray(tasks) || tasks.some(t => typeof t !== 'string' || t.length > 200))) {
++        return res.status(400).json({ error: 'Invalid tasks' });
++    }
++    if (tasks && tasks.length > 50) {
++        return res.status(400).json({ error: 'Too many tasks' });
++    }
++    if (image) {
++        const validation = validateImage(image);
++        if (!validation.valid) return res.status(400).json({ error: validation.error });
++    }
++
++    try {
++        await addToQueue(() => performPrint(title, date, tasks, image, template), 'manifest', { title, tasks, image, template });
++        res.json({ success: true });
++    } catch (error: any) {
++        res.status(500).json({ error: error.message });
++    }
++});
++
++app.post('/print-single', async (req: Request, res: Response) => {
++    const { taskName }: { taskName?: string } = req.body;
++
++    if (!taskName || typeof taskName !== 'string' || taskName.trim().length === 0) {
++        return res.status(400).json({ error: 'taskName required' });
++    }
++    if (taskName.length > 200) {
++        return res.status(400).json({ error: 'taskName too long' });
++    }
++
++    try {
++        await addToQueue(() => performSinglePrint(taskName.trim()), 'single', { taskName });
++        res.json({ success: true });
++    } catch (error: any) {
++        res.status(500).json({ error: error.message });
++    }
++});
++
++app.post('/print-qr', async (req: Request, res: Response) => {
++    const { url, title }: { url?: string; title?: string } = req.body;
++
++    if (!url || typeof url !== 'string') {
++        return res.status(400).json({ error: 'url required' });
++    }
++    if (url.length > 500) {
++        return res.status(400).json({ error: 'url too long' });
++    }
++
++    try {
++        const qrBuffer = await QRCode.toBuffer(url, { type: 'png', width: 300, margin: 2 });
++        const dataUri = `data:image/png;base64,${qrBuffer.toString('base64')}`;
++        await addToQueue(() => performPrint(title || 'QR CODE', new Date().toLocaleString(), [url], dataUri, 'default'), 'qr', { url, title });
++        res.json({ success: true });
++    } catch (error: any) {
++        res.status(500).json({ error: 'QR generation failed' });
++    }
++});
++
++app.post('/print-barcode', async (req: Request, res: Response) => {
++    const { data, format = 'CODE128', title }: { data?: string; format?: string; title?: string } = req.body;
++
++    if (!data || typeof data !== 'string') {
++        return res.status(400).json({ error: 'data required' });
++    }
++
++    try {
++        await addToQueue(() => performBarcodePrint(data, format, title), 'barcode', { data, format, title });
++        res.json({ success: true });
++    } catch (error: any) {
++        res.status(500).json({ error: error.message });
++    }
++});
++
++// --- Init ---
++const persistedJobs = loadQueue();
++persistedJobs.forEach(job => {
++    if (job.type === 'manifest') {
++        addToQueue(() => performPrint(job.payload.title, job.payload.date, job.payload.tasks, job.payload.image, job.payload.template), job.type, job.payload);
++    } else if (job.type === 'single') {
++        addToQueue(() => performSinglePrint(job.payload.taskName!), job.type, job.payload);
++    }
++});
++
++app.listen(port, () => {
++    logger.info(`ThermalFlow Print Server running on http://localhost:${port}`);
++});
+\ No newline at end of file
+diff --git a/print-server-ts/tsconfig.json b/print-server-ts/tsconfig.json
+new file mode 100644
+index 0000000..dc40597
+--- /dev/null
++++ b/print-server-ts/tsconfig.json
+@@ -0,0 +1,19 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "module": "commonjs",
++    "lib": ["ES2022"],
++    "outDir": "./dist",
++    "rootDir": "./src",
++    "strict": true,
++    "esModuleInterop": true,
++    "skipLibCheck": true,
++    "forceConsistentCasingInFileNames": true,
++    "resolveJsonModule": true,
++    "declaration": true,
++    "declarationMap": true,
++    "sourceMap": true
++  },
++  "include": ["src/**/*"],
++  "exclude": ["node_modules"]
++}
+\ No newline at end of file
+diff --git a/print-server.js b/print-server.js
+index 6abc29f..169bf69 100644
+--- a/print-server.js
++++ b/print-server.js
+@@ -2,28 +2,48 @@ const express = require('express');
+ const cors = require('cors');
+ const bodyParser = require('body-parser');
+ const escpos = require('escpos');
++const fs = require('fs');
++const path = require('path');
++const rateLimit = require('express-rate-limit');
++const QRCode = require('qrcode');
++const { createLogger, format, transports } = require('winston');
++
++// --- Structured Logging ---
++const logger = createLogger({
++    level: process.env.LOG_LEVEL || 'info',
++    format: format.combine(
++        format.timestamp(),
++        format.errors({ stack: true }),
++        format.json()
++    ),
++    defaultMeta: { service: 'thermalflow-print-server' },
++    transports: [
++        new transports.File({ filename: 'logs/error.log', level: 'error' }),
++        new transports.File({ filename: 'logs/combined.log' }),
++        new transports.Console({
++            format: format.combine(
++                format.colorize(),
++                format.simple()
++            )
++        })
++    ]
++});
+ 
+-// Compatibility Fix: escpos-usb expects the 'usb' module to be an EventEmitter
+-// with .on and .findByIds. Newer versions of the 'usb' module (v2+) have shifted
+-// these to a .usb property.
++// --- Compatibility Fix: escpos-usb expects the 'usb' module to be an EventEmitter ---
+ const usbModule = require('usb');
+ if (!usbModule.on && usbModule.usb && usbModule.usb.on) {
+-    console.log("[Compatibility] Patching 'usb' module for escpos-usb...");
++    logger.info("[Compatibility] Patching 'usb' module for escpos-usb...");
+     const target = usbModule.usb;
+-    // Surgically assign instead of Object.assign to avoid read-only errors
+     usbModule.on = (...args) => target.on(...args);
+     usbModule.emit = (...args) => target.emit(...args);
+     usbModule.once = (...args) => target.once(...args);
+     usbModule.removeListener = (...args) => target.removeListener(...args);
+     usbModule.removeAllListeners = (event) => {
+         if (event === 'detach') {
+-            // escpos-usb has a bug where it removes ALL global detach listeners on close().
+-            // We ignore this to keep the usb module state consistent.
+             return;
+         }
+         target.removeAllListeners(event);
+     };
+-
+     if (!usbModule.findByIds && target.findByIds) {
+         usbModule.findByIds = (...args) => target.findByIds(...args);
+     }
+@@ -33,55 +53,231 @@ if (!usbModule.on && usbModule.usb && usbModule.usb.on) {
+ try {
+     escpos.USB = require('escpos-usb');
+ } catch (e) {
+-    console.warn("escpos-usb NOT FOUND. Please install it: npm install escpos-usb");
++    logger.warn("escpos-usb NOT FOUND. Please install it: npm install escpos-usb");
+ }
+ 
+ const app = express();
+-const port = 3001;
++const port = process.env.PRINT_SERVER_PORT || 3001;
++
++// --- Rate Limiting ---
++const limiter = rateLimit({
++    windowMs: 15 * 60 * 1000, // 15 minutes
++    max: 100, // Limit each IP to 100 requests per windowMs
++    message: { error: 'Too many requests, please try again later.' },
++    standardHeaders: true,
++    legacyHeaders: false
++});
+ 
+ app.use(cors());
+-app.use(bodyParser.json());
++app.use(bodyParser.json({ limit: '5mb' }));
++app.use(limiter);
+ 
+-// Health Check / Diagnostics
+-app.get('/health', (req, res) => {
+-    res.json({
+-        status: 'alive',
+-        usbAvailable: typeof escpos.USB !== 'undefined',
+-        message: 'Printer server is running on port 3001'
++// --- Queue Persistence ---
++const QUEUE_FILE = path.join(__dirname, 'print-queue.json');
++
++function saveQueue() {
++    try {
++        const data = printQueue.map(item => ({
++            type: item.type,
++            payload: item.payload,
++            retries: item.retries
++        }));
++        fs.writeFileSync(QUEUE_FILE, JSON.stringify(data, null, 2));
++    } catch (e) {
++        logger.error("Failed to save queue:", e);
++    }
++}
++
++function loadQueue() {
++    try {
++        if (fs.existsSync(QUEUE_FILE)) {
++            const raw = fs.readFileSync(QUEUE_FILE, 'utf8');
++            const data = JSON.parse(raw);
++            logger.info(`Loaded ${data.length} pending print jobs from disk`);
++            return data;
++        }
++    } catch (e) {
++        logger.error("Failed to load queue:", e);
++    }
++    return [];
++}
++
++// --- Printer Status Check ---
++function checkPrinterStatus() {
++    return new Promise((resolve) => {
++        try {
++            if (typeof escpos.USB === 'undefined') {
++                return resolve({ connected: false, error: 'escpos-usb not loaded' });
++            }
++            const printers = escpos.USB.findPrinter();
++            if (printers && printers.length > 0) {
++                const target = printers.find(p =>
++                    p.deviceDescriptor.idVendor === 0x4b8 &&
++                    p.deviceDescriptor.idProduct === 0xe28
++                );
++                resolve({
++                    connected: true,
++                    printerFound: !!target,
++                    vendorId: target ? '0x4b8' : null,
++                    productId: target ? '0xe28' : null,
++                    availablePrinters: printers.length
++                });
++            } else {
++                resolve({ connected: false, error: 'No USB printers found' });
++            }
++        } catch (e) {
++            resolve({ connected: false, error: e.message });
++        }
+     });
+-});
++}
+ 
+-// --- Printer Queue Logic ---
+-const printQueue = [];
++// --- Print Queue with Persistence ---
++let printQueue = [];
+ let isProcessingQueue = false;
+ 
+-async function processQueue() {
+-    if (isProcessingQueue || printQueue.length === 0) return;
++function processQueue() {
++    if (isProcessingQueue || printQueue.length === 0) {
++        if (printQueue.length === 0) saveQueue();
++        return;
++    }
+     isProcessingQueue = true;
+ 
+-    const { job, resolve, reject } = printQueue.shift();
+-    try {
+-        await job();
+-        resolve();
+-    } catch (err) {
+-        console.error("Print job error:", err);
+-        reject(err);
+-    } finally {
+-        isProcessingQueue = false;
+-        // Small delay to let USB/Printer settle before next job
+-        setTimeout(processQueue, 1000);
++    const item = printQueue.shift();
++    const { job, resolve, reject, type, payload, retries = 0 } = item;
++
++    job()
++        .then(() => {
++            logger.info(`Print job completed: ${type}`, { payload: sanitizePayload(payload) });
++            resolve();
++        })
++        .catch((err) => {
++            logger.error(`Print job failed: ${type}`, { error: err.message, retries });
++            if (retries < 2) {
++                // Retry with exponential backoff
++                const delay = Math.pow(2, retries) * 500;
++                logger.info(`Retrying in ${delay}ms... (attempt ${retries + 1}/3)`);
++                setTimeout(() => {
++                    printQueue.unshift({ ...item, retries: retries + 1 });
++                    isProcessingQueue = false;
++                    processQueue();
++                }, delay);
++                return;
++            }
++            reject(err);
++        })
++        .finally(() => {
++            isProcessingQueue = false;
++            saveQueue();
++            setTimeout(processQueue, 1000);
++        });
++}
++
++function sanitizePayload(payload) {
++    const sanitized = { ...payload };
++    if (sanitized.image) {
++        sanitized.image = '[BASE64_IMAGE_REDACTED]';
+     }
++    return sanitized;
+ }
+ 
+-function addToQueue(job) {
++function addToQueue(job, type, payload) {
+     return new Promise((resolve, reject) => {
+-        printQueue.push({ job, resolve, reject });
++        printQueue.push({ job, resolve, reject, type, payload, retries: 0 });
++        saveQueue();
+         processQueue();
+     });
+ }
+ 
+-// Helper function to perform a print job
+-function performPrint(title, date, tasks, imageStr) {
++// --- Image Validation ---
++function validateImage(imageStr) {
++    if (!imageStr) return { valid: true };
++
++    if (typeof imageStr !== 'string') {
++        return { valid: false, error: 'Image must be a string' };
++    }
++
++    if (imageStr.length > 2_000_000) {
++        return { valid: false, error: 'Image too large (max 2MB base64)' };
++    }
++
++    const dataUriMatch = imageStr.match(/^data:image\/(png|jpeg|jpg|gif);base64,(.+)$/);
++    if (!dataUriMatch) {
++        return { valid: false, error: 'Invalid image data URI format. Expected data:image/png;base64,...' };
++    }
++
++    const format = dataUriMatch[1];
++    if (format !== 'png') {
++        return { valid: false, error: `Unsupported image format: ${format}. Only PNG is supported for thermal printing.` };
++    }
++
++    try {
++        const base64Data = dataUriMatch[2];
++        const buffer = Buffer.from(base64Data, 'base64');
++        if (buffer.length === 0) {
++            return { valid: false, error: 'Image buffer is empty' };
++        }
++        // Check PNG magic bytes
++        if (buffer[0] !== 0x89 || buffer[1] !== 0x50 || buffer[2] !== 0x4E || buffer[3] !== 0x47) {
++            return { valid: false, error: 'Invalid PNG file signature' };
++        }
++        return { valid: true, buffer };
++    } catch (e) {
++        return { valid: false, error: `Failed to decode image: ${e.message}` };
++    }
++}
++
++// --- Print Templates ---
++const templates = {
++    default: (printer, title, date, tasks, imageStr) => {
++        printer
++            .font('a')
++            .align('ct')
++            .style('b')
++            .size(1, 1)
++            .text(title || 'THERMALFLOW')
++            .size(0, 0)
++            .style('normal')
++            .text(date || new Date().toLocaleString())
++            .text('--------------------------------')
++            .align('lt');
++
++        if (tasks && Array.isArray(tasks)) {
++            tasks.forEach(task => printer.text(task));
++        }
++    },
++    minimal: (printer, title, date, tasks, imageStr) => {
++        printer
++            .font('a')
++            .align('lt')
++            .text(title || 'NOTE')
++            .text('---');
++        if (tasks && Array.isArray(tasks)) {
++            tasks.forEach(task => printer.text(`• ${task}`));
++        }
++    },
++    receipt: (printer, title, date, tasks, imageStr) => {
++        printer
++            .font('a')
++            .align('ct')
++            .style('b')
++            .text(title || 'RECEIPT')
++            .style('normal')
++            .text(date || new Date().toLocaleString())
++            .text('================================')
++            .align('lt');
++        if (tasks && Array.isArray(tasks)) {
++            tasks.forEach(task => printer.text(`  ${task}`));
++        }
++        printer.text('================================');
++    }
++};
++
++function getTemplate(name) {
++    return templates[name] || templates.default;
++}
++
++// --- Helper function to perform a print job ---
++function performPrint(title, date, tasks, imageStr, templateName) {
+     return new Promise((resolve, reject) => {
+         try {
+             let device;
+@@ -94,14 +290,14 @@ function performPrint(title, date, tasks, imageStr) {
+                 );
+ 
+                 if (target) {
+-                    console.log(`Found target printer: VID 0x${target.deviceDescriptor.idVendor.toString(16)}, PID 0x${target.deviceDescriptor.idProduct.toString(16)}`);
++                    logger.info(`Found target printer: VID 0x${target.deviceDescriptor.idVendor.toString(16)}, PID 0x${target.deviceDescriptor.idProduct.toString(16)}`);
+                     device = new escpos.USB(target);
+                 } else {
+-                    console.log(`Using first available printer (VID 0x${printers[0].deviceDescriptor.idVendor.toString(16)}).`);
++                    logger.info(`Using first available printer (VID 0x${printers[0].deviceDescriptor.idVendor.toString(16)}).`);
+                     device = new escpos.USB(printers[0]);
+                 }
+             } else {
+-                console.log("Falling back to hardcoded VID/PID...");
++                logger.info("Falling back to hardcoded VID/PID...");
+                 device = new escpos.USB(0x4b8, 0xe28);
+             }
+ 
+@@ -110,11 +306,22 @@ function performPrint(title, date, tasks, imageStr) {
+ 
+             device.open(function (error) {
+                 if (error) {
+-                    console.error("Printer Connection Error:", error);
++                    logger.error("Printer Connection Error:", error);
+                     return reject(new Error('Printer not ready'));
+                 }
+ 
+-                console.log("Printer Connected. Printing...");
++                logger.info("Printer Connected. Printing...");
++
++                // Validate image if provided
++                if (imageStr) {
++                    const validation = validateImage(imageStr);
++                    if (!validation.valid) {
++                        device.close();
++                        return reject(new Error(validation.error));
++                    }
++                }
++
++                const template = getTemplate(templateName);
+ 
+                 if (imageStr) {
+                     try {
+@@ -122,28 +329,10 @@ function performPrint(title, date, tasks, imageStr) {
+                         const buffer = Buffer.from(base64Data, 'base64');
+                         escpos.Image.load(buffer, 'image/png', function (img) {
+                             if (!img) {
+-                                console.log("Failed to load image buffer");
++                                logger.error("Failed to load image buffer");
+                                 return closePrinter();
+                             }
+-                            printer
+-                                .font('a')
+-                                .align('ct')
+-                                .style('b')
+-                                .size(1, 1)
+-                                .text(title || 'THERMALFLOW')
+-                                .size(0, 0)
+-                                .style('normal')
+-                                .text(date || new Date().toLocaleString())
+-                                .text('--------------------------------');
+-
+-                            if (tasks && Array.isArray(tasks)) {
+-                                printer.align('lt');
+-                                tasks.forEach(task => {
+-                                    printer.text(task);
+-                                });
+-                            }
+-
+-                            // Print the image
++                            template(printer, title, date, tasks, imageStr);
+                             printer
+                                 .align('ct')
+                                 .raster(img)
+@@ -154,34 +343,18 @@ function performPrint(title, date, tasks, imageStr) {
+                                 .feed(3)
+                                 .cut()
+                                 .close(() => {
+-                                    console.log("Print Success (with image)");
++                                    logger.info("Print Success (with image)");
+                                     resolve();
+                                 });
+                         });
+-                        return; // Async image loading handles the rest
++                        return;
+                     } catch (err) {
+-                        console.error("Error processing image:", err);
++                        logger.error("Error processing image:", err);
+                     }
+                 }
+ 
+                 // Normal Text Print (No Image)
+-                printer
+-                    .font('a')
+-                    .align('ct')
+-                    .style('b')
+-                    .size(1, 1)
+-                    .text(title || 'THERMALFLOW')
+-                    .size(0, 0)
+-                    .style('normal')
+-                    .text(date || new Date().toLocaleString())
+-                    .text('--------------------------------')
+-                    .align('lt');
+-
+-                if (tasks && Array.isArray(tasks)) {
+-                    tasks.forEach(task => {
+-                        printer.text(task);
+-                    });
+-                }
++                template(printer, title, date, tasks, imageStr);
+ 
+                 function closePrinter() {
+                     printer
+@@ -192,7 +365,7 @@ function performPrint(title, date, tasks, imageStr) {
+                         .feed(3)
+                         .cut()
+                         .close(() => {
+-                            console.log("Print Success");
++                            logger.info("Print Success");
+                             resolve();
+                         });
+                 }
+@@ -201,7 +374,7 @@ function performPrint(title, date, tasks, imageStr) {
+             });
+ 
+         } catch (e) {
+-            console.error("USB Device Initialization Failed:", e.message);
++            logger.error("USB Device Initialization Failed:", e.message);
+             reject(new Error('Printer device not found'));
+         }
+     });
+@@ -229,11 +402,11 @@ function performSinglePrint(taskName) {
+ 
+             device.open(function (error) {
+                 if (error) {
+-                    console.error("Printer Connection Error:", error);
++                    logger.error("Printer Connection Error:", error);
+                     return reject(new Error('Printer not ready'));
+                 }
+ 
+-                console.log(`Printing individual task: ${taskName}`);
++                logger.info(`Printing individual task: ${taskName}`);
+ 
+                 printer
+                     .font('a')
+@@ -250,47 +423,250 @@ function performSinglePrint(taskName) {
+                     .feed(2)
+                     .cut()
+                     .close(() => {
+-                        console.log("Single Print Success");
++                        logger.info("Single Print Success");
+                         resolve();
+                     });
+             });
+ 
+         } catch (e) {
+-            console.error("USB Device Initialization Failed:", e.message);
++            logger.error("USB Device Initialization Failed:", e.message);
+             reject(new Error('Printer device not found'));
+         }
+     });
+ }
+ 
++// --- API Endpoints ---
++
++// Health Check / Diagnostics
++app.get('/health', async (req, res) => {
++    const printerStatus = await checkPrinterStatus();
++    res.json({
++        status: 'alive',
++        usbAvailable: typeof escpos.USB !== 'undefined',
++        printer: printerStatus,
++        queueLength: printQueue.length,
++        message: 'Printer server is running on port 3001'
++    });
++});
++
++// Printer Status Endpoint
++app.get('/printer-status', async (req, res) => {
++    const status = await checkPrinterStatus();
++    res.json(status);
++});
++
++// Queue Status
++app.get('/queue', (req, res) => {
++    res.json({
++        length: printQueue.length,
++        isProcessing: isProcessingQueue,
++        jobs: printQueue.map(j => ({ type: j.type, retries: j.retries }))
++    });
++});
++
++// Print Manifest (Multi-line with optional image)
+ app.post('/print', async (req, res) => {
+-    const { title, date, tasks, image } = req.body;
+-    console.log(`Queueing Manifest Print: ${title} (${tasks ? tasks.length : 0} tasks) ${image ? '[IMAGE INCLUDED]' : ''}`);
++    const { title, date, tasks, image, template } = req.body;
++
++    // Input validation
++    if (title && (typeof title !== 'string' || title.length > 100)) {
++        return res.status(400).json({ error: 'Invalid title: must be string under 100 chars' });
++    }
++    if (date && (typeof date !== 'string' || date.length > 50)) {
++        return res.status(400).json({ error: 'Invalid date: must be string under 50 chars' });
++    }
++    if (tasks && (!Array.isArray(tasks) || tasks.some(t => typeof t !== 'string' || t.length > 200))) {
++        return res.status(400).json({ error: 'Invalid tasks: must be array of strings under 200 chars each' });
++    }
++    if (tasks && tasks.length > 50) {
++        return res.status(400).json({ error: 'Too many tasks: max 50 per print job' });
++    }
++
++    if (image) {
++        const validation = validateImage(image);
++        if (!validation.valid) {
++            return res.status(400).json({ error: validation.error });
++        }
++    }
++
++    logger.info(`Queueing Manifest Print: ${title} (${tasks ? tasks.length : 0} tasks) ${image ? '[IMAGE]' : ''}`);
+ 
+     try {
+-        await addToQueue(() => performPrint(title, date, tasks, image));
++        await addToQueue(
++            () => performPrint(title, date, tasks, image, template),
++            'manifest',
++            { title, taskCount: tasks?.length, hasImage: !!image, template }
++        );
+         res.json({ success: true });
+     } catch (error) {
+         res.status(500).json({ error: error.message });
+     }
+ });
+ 
++// Print Single Task
+ app.post('/print-single', async (req, res) => {
+     const { taskName } = req.body;
+-    console.log(`Queueing Single Print: ${taskName}`);
++
++    // Input validation
++    if (!taskName || typeof taskName !== 'string' || taskName.trim().length === 0) {
++        return res.status(400).json({ error: 'taskName is required and must be a non-empty string' });
++    }
++    if (taskName.length > 200) {
++        return res.status(400).json({ error: 'taskName too long: max 200 chars' });
++    }
++
++    logger.info(`Queueing Single Print: ${taskName}`);
+ 
+     try {
+-        await addToQueue(() => performSinglePrint(taskName));
++        await addToQueue(
++            () => performSinglePrint(taskName.trim()),
++            'single',
++            { taskName: taskName.substring(0, 50) }
++        );
+         res.json({ success: true });
+     } catch (error) {
+         res.status(500).json({ error: error.message });
+     }
+ });
+ 
+-app.listen(port, () => {
+-    console.log(`ThermalFlow Print Server running on http://localhost:${port}`);
+-    console.log(`Using VID: 0x4b8, PID: 0xe28`);
++// QR Code Generation Endpoint
++app.post('/print-qr', async (req, res) => {
++    const { url, title } = req.body;
++
++    if (!url || typeof url !== 'string') {
++        return res.status(400).json({ error: 'url is required' });
++    }
++    if (url.length > 500) {
++        return res.status(400).json({ error: 'url too long: max 500 chars' });
++    }
++
++    try {
++        // Generate QR code as PNG buffer
++        const qrBuffer = await QRCode.toBuffer(url, {
++            type: 'png',
++            width: 300,
++            margin: 2,
++            color: { dark: '#000000', light: '#FFFFFF' }
++        });
++
++        const base64 = qrBuffer.toString('base64');
++        const dataUri = `data:image/png;base64,${base64}`;
++
++        logger.info(`Queueing QR Print: ${url}`);
++
++        await addToQueue(
++            () => performPrint(title || 'QR CODE', new Date().toLocaleString(), [url], dataUri, 'default'),
++            'qr',
++            { url, title }
++        );
++        res.json({ success: true });
++    } catch (error) {
++        logger.error("QR generation failed:", error);
++        res.status(500).json({ error: 'Failed to generate QR code' });
++    }
++});
++
++// Barcode Generation Endpoint (EAN13, CODE128, etc.)
++app.post('/print-barcode', async (req, res) => {
++    const { data, format = 'CODE128', title } = req.body;
++
++    if (!data || typeof data !== 'string') {
++        return res.status(400).json({ error: 'data is required' });
++    }
++
++    // Note: escpos has built-in barcode support for many formats
++    // This endpoint prints the barcode using native printer commands
++    logger.info(`Queueing Barcode Print: ${format} - ${data}`);
++
++    try {
++        await addToQueue(
++            () => performBarcodePrint(data, format, title),
++            'barcode',
++            { data, format, title }
++        );
++        res.json({ success: true });
++    } catch (error) {
++        res.status(500).json({ error: error.message });
++    }
++});
++
++function performBarcodePrint(data, format, title) {
++    return new Promise((resolve, reject) => {
++        try {
++            let device;
++            const printers = escpos.USB.findPrinter();
++            if (printers && printers.length > 0) {
++                const target = printers.find(p =>
++                    p.deviceDescriptor.idVendor === 0x4b8 &&
++                    p.deviceDescriptor.idProduct === 0xe28
++                );
++                device = new escpos.USB(target || printers[0]);
++            } else {
++                device = new escpos.USB(0x4b8, 0xe28);
++            }
++
++            const options = { encoding: "GB18030" };
++            const printer = new escpos.Printer(device, options);
+ 
+-    // Perform startup test print
+-    // console.log("Attempting startup test print...");
+-    // performPrint("STARTUP TEST", new Date().toLocaleString(), ["Initialization successful", "Printer is ONLINE"]);
++            device.open(function (error) {
++                if (error) {
++                    logger.error("Printer Connection Error:", error);
++                    return reject(new Error('Printer not ready'));
++                }
++
++                printer
++                    .font('a')
++                    .align('ct')
++                    .style('b')
++                    .text(title || 'BARCODE')
++                    .style('normal')
++                    .text('--------------------------------');
++
++                // escpos barcode command: printer.barcode(data, format, options)
++                try {
++                    printer.barcode(data, format, { width: 2, height: 100 });
++                } catch (e) {
++                    logger.warn(`Barcode format ${format} not supported, printing as text:`, e.message);
++                    printer.text(data);
++                }
++
++                printer
++                    .text('--------------------------------')
++                    .feed(3)
++                    .cut()
++                    .close(() => {
++                        logger.info("Barcode Print Success");
++                        resolve();
++                    });
++            });
++        } catch (e) {
++            logger.error("USB Device Initialization Failed:", e.message);
++            reject(new Error('Printer device not found'));
++        }
++    });
++}
++
++// --- Initialize ---
++// Load persisted queue on startup
++const persistedJobs = loadQueue();
++persistedJobs.forEach(job => {
++    if (job.type === 'manifest') {
++        addToQueue(
++            () => performPrint(job.payload.title, job.payload.date, job.payload.tasks, job.payload.image, job.payload.template),
++            job.type,
++            job.payload
++        );
++    } else if (job.type === 'single') {
++        addToQueue(
++            () => performSinglePrint(job.payload.taskName),
++            job.type,
++            job.payload
++        );
++    }
+ });
++
++app.listen(port, () => {
++    logger.info(`ThermalFlow Print Server running on http://localhost:${port}`);
++    logger.info(`Using VID: 0x4b8, PID: 0xe28`);
++    logger.info(`Queue persistence: ${QUEUE_FILE}`);
++});
+\ No newline at end of file
+diff --git a/server.js b/server.js
+index 2264a67..a431180 100644
+--- a/server.js
++++ b/server.js
+@@ -446,8 +446,118 @@ app.prepare().then(() => {
+         }
+     });
+ 
++    // --- New Print Server Endpoints ---
++
++    expressApp.post('/api/print-qr', async (req, res) => {
++        try {
++            const response = await fetch(`${PRINT_SERVER_BASE}/print-qr`, {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify(req.body)
++            });
++            const data = await response.json();
++            res.status(response.status).json(data);
++        } catch (error) {
++            console.error('Print proxy error (/api/print-qr):', error);
++            res.status(502).json({ error: 'Could not connect to print server' });
++        }
++    });
++
++    expressApp.post('/api/print-barcode', async (req, res) => {
++        try {
++            const response = await fetch(`${PRINT_SERVER_BASE}/print-barcode`, {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify(req.body)
++            });
++            const data = await response.json();
++            res.status(response.status).json(data);
++        } catch (error) {
++            console.error('Print proxy error (/api/print-barcode):', error);
++            res.status(502).json({ error: 'Could not connect to print server' });
++        }
++    });
++
++    expressApp.get('/api/printer-status', async (req, res) => {
++        try {
++            const response = await fetch(`${PRINT_SERVER_BASE}/printer-status`);
++            const data = await response.json();
++            res.status(response.status).json(data);
++        } catch (error) {
++            console.error('Print proxy error (/api/printer-status):', error);
++            res.status(502).json({ error: 'Could not connect to print server' });
++        }
++    });
++
++    expressApp.get('/api/queue', async (req, res) => {
++        try {
++            const response = await fetch(`${PRINT_SERVER_BASE}/queue`);
++            const data = await response.json();
++            res.status(response.status).json(data);
++        } catch (error) {
++            console.error('Print proxy error (/api/queue):', error);
++            res.status(502).json({ error: 'Could not connect to print server' });
++        }
++    });
++
+     // Printing is now handled by standalone print-server.js on port 3001 proxyed via /api/* above
+ 
++    // --- Task Capture Endpoint (adds task to web UI) ---
++    expressApp.post('/api/tasks/capture', async (req, res) => {
++        const { title, parentId = 'root' } = req.body;
++
++        if (!title || typeof title !== 'string' || title.trim().length === 0) {
++            return res.status(400).json({ error: 'title is required and must be a non-empty string' });
++        }
++        if (title.length > 200) {
++            return res.status(400).json({ error: 'title too long: max 200 chars' });
++        }
++
++        const newId = Math.random().toString(36).substring(2, 9);
++        const now = Date.now();
++        const newTask = {
++            id: newId,
++            title: title.trim(),
++            completed: false,
++            children: [],
++            parentId: parentId,
++            createdAt: now
++        };
++
++        // Update master state
++        masterState.tasks[newId] = newTask;
++
++        // Add to parent's children
++        const parent = masterState.tasks[parentId];
++        if (parent) {
++            masterState.tasks[parentId] = {
++                ...parent,
++                children: [...parent.children, newId]
++            };
++        } else {
++            // Fallback to root if parent not found
++            masterState.tasks.root.children.push(newId);
++        }
++
++        masterState.version++;
++        masterState.lastModified = now;
++        saveData(masterState);
++
++        // Broadcast to all connected clients
++        if (global.io) {
++            global.io.emit('sync:patch', {
++                tasks: {
++                    [newId]: newTask,
++                    [parentId]: masterState.tasks[parentId] || masterState.tasks.root
++                },
++                version: masterState.version,
++                lastModified: masterState.lastModified
++            });
++        }
++
++        console.log(`Task captured via API: "${title}" (id: ${newId})`);
++        res.json({ success: true, taskId: newId, task: newTask });
++    });
+ 
+     // --- Next.js Handling ---
+     expressApp.post('/api/admin/redeploy', (req, res) => {
+-- 
+2.43.0
+
