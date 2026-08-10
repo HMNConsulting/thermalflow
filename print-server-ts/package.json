@@ -1,0 +1,29 @@
+{
+  "name": "thermalflow-print-server",
+  "version": "1.0.0",
+  "description": "ThermalFlow Print Server - TypeScript",
+  "main": "dist/print-server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/print-server.js",
+    "dev": "ts-node src/print-server.ts"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "cors": "^2.8.6",
+    "body-parser": "^2.2.2",
+    "escpos": "^3.0.0-alpha.6",
+    "escpos-usb": "^3.0.0-alpha.4",
+    "express-rate-limit": "^8.2.1",
+    "qrcode": "^1.5.4",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/body-parser": "^1.19.5",
+    "@types/qrcode": "^1.5.5",
+    "typescript": "^5",
+    "ts-node": "^10.9.2"
+  }
+}

@@ -446,8 +446,118 @@ app.prepare().then(() => {
         }
     });
 
+    // --- New Print Server Endpoints ---
+
+    expressApp.post('/api/print-qr', async (req, res) => {
+        try {
+            const response = await fetch(`${PRINT_SERVER_BASE}/print-qr`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(req.body)
+            });
+            const data = await response.json();
+            res.status(response.status).json(data);
+        } catch (error) {
+            console.error('Print proxy error (/api/print-qr):', error);
+            res.status(502).json({ error: 'Could not connect to print server' });
+        }
+    });
+
+    expressApp.post('/api/print-barcode', async (req, res) => {
+        try {
+            const response = await fetch(`${PRINT_SERVER_BASE}/print-barcode`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(req.body)
+            });
+            const data = await response.json();
+            res.status(response.status).json(data);
+        } catch (error) {
+            console.error('Print proxy error (/api/print-barcode):', error);
+            res.status(502).json({ error: 'Could not connect to print server' });
+        }
+    });
+
+    expressApp.get('/api/printer-status', async (req, res) => {
+        try {
+            const response = await fetch(`${PRINT_SERVER_BASE}/printer-status`);
+            const data = await response.json();
+            res.status(response.status).json(data);
+        } catch (error) {
+            console.error('Print proxy error (/api/printer-status):', error);
+            res.status(502).json({ error: 'Could not connect to print server' });
+        }
+    });
+
+    expressApp.get('/api/queue', async (req, res) => {
+        try {
+            const response = await fetch(`${PRINT_SERVER_BASE}/queue`);
+            const data = await response.json();
+            res.status(response.status).json(data);
+        } catch (error) {
+            console.error('Print proxy error (/api/queue):', error);
+            res.status(502).json({ error: 'Could not connect to print server' });
+        }
+    });
+
     // Printing is now handled by standalone print-server.js on port 3001 proxyed via /api/* above
 
+    // --- Task Capture Endpoint (adds task to web UI) ---
+    expressApp.post('/api/tasks/capture', async (req, res) => {
+        const { title, parentId = 'root' } = req.body;
+
+        if (!title || typeof title !== 'string' || title.trim().length === 0) {
+            return res.status(400).json({ error: 'title is required and must be a non-empty string' });
+        }
+        if (title.length > 200) {
+            return res.status(400).json({ error: 'title too long: max 200 chars' });
+        }
+
+        const newId = Math.random().toString(36).substring(2, 9);
+        const now = Date.now();
+        const newTask = {
+            id: newId,
+            title: title.trim(),
+            completed: false,
+            children: [],
+            parentId: parentId,
+            createdAt: now
+        };
+
+        // Update master state
+        masterState.tasks[newId] = newTask;
+
+        // Add to parent's children
+        const parent = masterState.tasks[parentId];
+        if (parent) {
+            masterState.tasks[parentId] = {
+                ...parent,
+                children: [...parent.children, newId]
+            };
+        } else {
+            // Fallback to root if parent not found
+            masterState.tasks.root.children.push(newId);
+        }
+
+        masterState.version++;
+        masterState.lastModified = now;
+        saveData(masterState);
+
+        // Broadcast to all connected clients
+        if (global.io) {
+            global.io.emit('sync:patch', {
+                tasks: {
+                    [newId]: newTask,
+                    [parentId]: masterState.tasks[parentId] || masterState.tasks.root
+                },
+                version: masterState.version,
+                lastModified: masterState.lastModified
+            });
+        }
+
+        console.log(`Task captured via API: "${title}" (id: ${newId})`);
+        res.json({ success: true, taskId: newId, task: newTask });
+    });
 
     // --- Next.js Handling ---
     expressApp.post('/api/admin/redeploy', (req, res) => {
