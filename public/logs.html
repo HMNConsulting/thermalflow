@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ThermalFlow - Live Redeploy Logs</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', monospace;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #00d9ff;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        input, button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        input {
+            background: #16213e;
+            color: #eee;
+            border: 1px solid #0f3460;
+            width: 300px;
+        }
+        input:focus {
+            outline: none;
+            border-color: #00d9ff;
+        }
+        button {
+            background: #0f3460;
+            color: #eee;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+        button:disabled {
+            background: #333;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status.connected { background: #00c853; color: #000; }
+        .status.disconnected { background: #ff5252; color: #fff; }
+        .status.streaming { background: #00d9ff; color: #000; }
+        .log-container {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 20px;
+            height: 70vh;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .log-line {
+            padding: 2px 0;
+            border-bottom: 1px solid #0f3460;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .log-line:last-child { border-bottom: none; }
+        .log-line.error { color: #ff5252; }
+        .log-line.info { color: #00d9ff; }
+        .log-line.success { color: #00c853; }
+        .timestamp {
+            color: #666;
+            margin-right: 10px;
+        }
+        .empty-state {
+            text-align: center;
+            color: #666;
+            padding: 40px;
+        }
+        .clear-btn {
+            margin-left: auto;
+            background: #ff5252;
+        }
+        .clear-btn:hover {
+            background: #ff1744;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔥 ThermalFlow Live Logs</h1>
+        
+        <div class="controls">
+            <input type="password" id="apiKey" placeholder="Enter REDEPLOY_KEY" />
+            <button id="connectBtn" onclick="toggleConnection()">Connect</button>
+            <button id="streamBtn" onclick="toggleStream()" disabled>Start Stream</button>
+            <span id="status" class="status disconnected">Disconnected</span>
+            <button class="clear-btn" onclick="clearLogs()">Clear</button>
+        </div>
+        
+        <div class="log-container" id="logContainer">
+            <div class="empty-state">
+                Enter your REDEPLOY_KEY and click Connect to start viewing logs
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket = null;
+        let isStreaming = false;
+        
+        const logContainer = document.getElementById('logContainer');
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const streamBtn = document.getElementById('streamBtn');
+        const apiKeyInput = document.getElementById('apiKey');
+        
+        // Load saved key
+        const savedKey = localStorage.getItem('redeploy_key');
+        if (savedKey) apiKeyInput.value = savedKey;
+        
+        function updateStatus(text, className) {
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + className;
+        }
+        
+        function addLogLine(text, type = '') {
+            const emptyState = logContainer.querySelector('.empty-state');
+            if (emptyState) emptyState.remove();
+            
+            const line = document.createElement('div');
+            line.className = 'log-line ' + type;
+            
+            const time = new Date().toLocaleTimeString();
+            line.innerHTML = `<span class="timestamp">[${time}]</span>${escapeHtml(text)}`;
+            
+            logContainer.appendChild(line);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function clearLogs() {
+            logContainer.innerHTML = '<div class="empty-state">Logs cleared</div>';
+        }
+        
+        function toggleConnection() {
+            if (socket) {
+                disconnect();
+            } else {
+                connect();
+            }
+        }
+        
+        function connect() {
+            const key = apiKeyInput.value.trim();
+            if (!key) {
+                alert('Please enter REDEPLOY_KEY');
+                return;
+            }
+            
+            localStorage.setItem('redeploy_key', key);
+            
+            // Connect to Socket.IO
+            socket = io();
+            
+            socket.on('connect', () => {
+                updateStatus('Connected', 'connected');
+                connectBtn.textContent = 'Disconnect';
+                streamBtn.disabled = false;
+                addLogLine('Connected to server', 'info');
+            });
+            
+            socket.on('disconnect', () => {
+                updateStatus('Disconnected', 'disconnected');
+                connectBtn.textContent = 'Connect';
+                streamBtn.disabled = true;
+                streamBtn.textContent = 'Start Stream';
+                isStreaming = false;
+                addLogLine('Disconnected from server', 'error');
+            });
+            
+            socket.on('logs:info', (data) => {
+                addLogLine(data.message, 'info');
+            });
+            
+            socket.on('logs:error', (data) => {
+                addLogLine('ERROR: ' + data.error, 'error');
+                if (data.error === 'Unauthorized') {
+                    disconnect();
+                }
+            });
+            
+            socket.on('logs:data', (data) => {
+                data.lines.forEach(line => {
+                    // Color code based on content
+                    let type = '';
+                    if (line.includes('ERROR') || line.includes('error') || line.includes('failed')) {
+                        type = 'error';
+                    } else if (line.includes('SUCCESS') || line.includes('success') || line.includes('complete')) {
+                        type = 'success';
+                    }
+                    addLogLine(line, type);
+                });
+            });
+        }
+        
+        function disconnect() {
+            if (socket) {
+                if (isStreaming) {
+                    socket.emit('logs:unsubscribe');
+                    isStreaming = false;
+                }
+                socket.disconnect();
+                socket = null;
+            }
+            updateStatus('Disconnected', 'disconnected');
+            connectBtn.textContent = 'Connect';
+            streamBtn.disabled = true;
+            streamBtn.textContent = 'Start Stream';
+        }
+        
+        function toggleStream() {
+            if (!socket) return;
+            
+            if (isStreaming) {
+                socket.emit('logs:unsubscribe');
+                streamBtn.textContent = 'Start Stream';
+                updateStatus('Connected', 'connected');
+                isStreaming = false;
+            } else {
+                const key = apiKeyInput.value.trim();
+                socket.emit('logs:subscribe', { key });
+                streamBtn.textContent = 'Stop Stream';
+                updateStatus('Streaming', 'streaming');
+                isStreaming = true;
+            }
+        }
+    </script>
+</body>
+</html>

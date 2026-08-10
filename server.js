@@ -362,6 +362,64 @@ app.prepare().then(() => {
         // Send current state to newly connected client
         socket.emit('sync:init', masterState);
 
+        // Log streaming for redeploy
+        let logTailProcess = null;
+        
+        socket.on('logs:subscribe', (data) => {
+            const { key } = data || {};
+            const secret = process.env.REDEPLOY_KEY;
+            
+            if (!secret || key !== secret) {
+                socket.emit('logs:error', { error: 'Unauthorized' });
+                return;
+            }
+            
+            console.log('Client subscribed to log stream');
+            socket.emit('logs:info', { message: 'Connected to log stream' });
+            
+            // Start tailing the log file
+            const logFile = path.join(__dirname, 'redeploy.log');
+            const isWin = process.platform === "win32";
+            
+            if (isWin) {
+                // Windows: Use PowerShell Get-Content -Wait
+                logTailProcess = spawn('powershell.exe', [
+                    '-Command', 
+                    `Get-Content -Path "${logFile}" -Wait -Tail 50`
+                ]);
+            } else {
+                // Linux/Mac: Use tail -f
+                logTailProcess = spawn('tail', ['-f', '-n', '50', logFile]);
+            }
+            
+            logTailProcess.stdout.on('data', (data) => {
+                socket.emit('logs:data', { lines: data.toString().split('\n').filter(l => l.trim()) });
+            });
+            
+            logTailProcess.stderr.on('data', (data) => {
+                socket.emit('logs:error', { error: data.toString() });
+            });
+            
+            logTailProcess.on('close', () => {
+                socket.emit('logs:info', { message: 'Log stream ended' });
+            });
+        });
+        
+        socket.on('logs:unsubscribe', () => {
+            if (logTailProcess) {
+                logTailProcess.kill();
+                logTailProcess = null;
+                socket.emit('logs:info', { message: 'Unsubscribed from log stream' });
+            }
+        });
+        
+        socket.on('disconnect', () => {
+            if (logTailProcess) {
+                logTailProcess.kill();
+                logTailProcess = null;
+            }
+        });
+
         // Handle full updates from client (Fallback/Legacy)
         socket.on('sync:update', (newState) => {
             if (newState.version > masterState.version) {
