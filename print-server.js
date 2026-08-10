@@ -226,6 +226,31 @@ function validateImage(imageStr) {
     }
 }
 
+// --- Character Sanitization ---
+// Replaces Unicode characters that don't map correctly in GB18030 encoding
+function sanitizeText(text) {
+    if (!text) return text;
+    return text
+        .replace(/•/g, '-')           // bullet
+        .replace(/[—–]/g, '--')       // em/en dash
+        .replace(/['']/g, "'")        // smart quotes
+        .replace(/[" "]/g, '"')       // smart double quotes
+        .replace(/°/g, ' deg')        // degree symbol
+        .replace(/…/g, '...')         // ellipsis
+        .replace(/×/g, 'x')           // multiplication sign
+        .replace(/÷/g, '/')           // division sign
+        .replace(/½/g, '1/2')         // fractions
+        .replace(/¼/g, '1/4')
+        .replace(/¾/g, '3/4')
+        .replace(/⅓/g, '1/3')
+        .replace(/⅔/g, '2/3');
+}
+
+function sanitizeTasks(tasks) {
+    if (!Array.isArray(tasks)) return tasks;
+    return tasks.map(t => sanitizeText(t));
+}
+
 // --- Print Templates ---
 const templates = {
     default: (printer, title, date, tasks, imageStr) => {
@@ -234,7 +259,7 @@ const templates = {
             .align('ct')
             .style('b')
             .size(1, 1)
-            .text(title || 'THERMALFLOW')
+            .text(sanitizeText(title) || 'THERMALFLOW')
             .size(0, 0)
             .style('normal')
             .text(date || new Date().toLocaleString())
@@ -242,17 +267,17 @@ const templates = {
             .align('lt');
 
         if (tasks && Array.isArray(tasks)) {
-            tasks.forEach(task => printer.text(task));
+            sanitizeTasks(tasks).forEach(task => printer.text(task));
         }
     },
     minimal: (printer, title, date, tasks, imageStr) => {
         printer
             .font('a')
             .align('lt')
-            .text(title || 'NOTE')
+            .text(sanitizeText(title) || 'NOTE')
             .text('---');
         if (tasks && Array.isArray(tasks)) {
-            tasks.forEach(task => printer.text(`• ${task}`));
+            sanitizeTasks(tasks).forEach(task => printer.text(`- ${task}`));
         }
     },
     receipt: (printer, title, date, tasks, imageStr) => {
@@ -260,13 +285,13 @@ const templates = {
             .font('a')
             .align('ct')
             .style('b')
-            .text(title || 'RECEIPT')
+            .text(sanitizeText(title) || 'RECEIPT')
             .style('normal')
             .text(date || new Date().toLocaleString())
             .text('================================')
             .align('lt');
         if (tasks && Array.isArray(tasks)) {
-            tasks.forEach(task => printer.text(`  ${task}`));
+            sanitizeTasks(tasks).forEach(task => printer.text(`  ${task}`));
         }
         printer.text('================================');
     }
@@ -336,10 +361,6 @@ function performPrint(title, date, tasks, imageStr, templateName) {
                             printer
                                 .align('ct')
                                 .raster(img)
-                                .text('--------------------------------')
-                                .feed(1)
-                                .align('ct')
-                                .text('END OF TRANSMISSION')
                                 .feed(3)
                                 .cut()
                                 .close(() => {
@@ -358,10 +379,6 @@ function performPrint(title, date, tasks, imageStr, templateName) {
 
                 function closePrinter() {
                     printer
-                        .text('--------------------------------')
-                        .feed(1)
-                        .align('ct')
-                        .text('END OF TRANSMISSION')
                         .feed(3)
                         .cut()
                         .close(() => {
@@ -416,7 +433,7 @@ function performSinglePrint(taskName) {
                     .text('------------------------')
                     .feed(1)
                     .size(2, 2)
-                    .text(taskName)
+                    .text(sanitizeText(taskName))
                     .size(1, 1)
                     .feed(1)
                     .text('------------------------')
