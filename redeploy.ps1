@@ -1,37 +1,59 @@
 # ThermalFlow Remote Redeploy Script
+# Pulls latest code from git and restarts gracefully
+
 $ErrorActionPreference = "Stop"
 $workingDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $workingDir
 
 Write-Output "[$(Get-Date)] Starting redeployment process..."
 
-# 1. Wait for parent process to exit
-Start-Sleep -Seconds 3
+# 1. Pull latest code from git main
+Write-Output "Pulling latest code from git..."
+git fetch origin main
+git reset --hard origin/main
 
-# 2. Force kill any node processes on app ports (3000, 3001)
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "Git pull failed, aborting redeploy"
+    exit 1
+}
+
+Write-Output "Git pull successful"
+
+# 2. Install dependencies (if package.json changed)
+Write-Output "Installing dependencies..."
+npm install --include=dev
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "npm install failed"
+    exit 1
+}
+
+# 3. Build
+Write-Output "Building..."
+npm run build
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "Build failed"
+    exit 1
+}
+
+# 4. Restart gracefully
+Write-Output "Restarting server..."
+
+# Find and stop existing node processes on ports 3000/3001
 $ports = @(3000, 3001)
 foreach ($port in $ports) {
     $processes = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     foreach ($proc in $processes) {
-        Write-Output "Killing process $($proc.OwningProcess) on port $port"
+        Write-Output "Stopping process $($proc.OwningProcess) on port $port"
         Stop-Process -Id $proc.OwningProcess -Force -ErrorAction SilentlyContinue
     }
 }
 
-# 3. Clean up node_modules if needed (Optional, usually npm install is enough)
-# Remove-Item -Recurse -Force node_modules
+# Wait a moment for ports to free up
+Start-Sleep -Seconds 2
 
-# 4. Install and Build
-Write-Output "Running npm install (with devDependencies for build)..."
-& npm install --include=dev
-if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+# Start server in background
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm start" -WindowStyle Hidden -WorkingDirectory $workingDir
 
-Write-Output "Running npm run build..."
-& npm run build
-if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-
-# 5. Restart via Start-Process
-Write-Output "Restarting ThermalFlow Server..."
-Start-Process -FilePath "cmd.exe" -ArgumentList "/c start-server.bat" -WindowStyle Hidden -WorkingDirectory $workingDir
-
-Write-Output "Redeployment triggered successfully."
+Write-Output "[$(Get-Date)] Redeployment complete. Server restarted."
