@@ -131,6 +131,9 @@
     <script>
         let socket = null;
         let isStreaming = false;
+        let reconnectAttempts = 0;
+        let maxReconnectAttempts = 30; // Try for ~5 minutes
+        let reconnectInterval = null;
         
         const logContainer = document.getElementById('logContainer');
         const statusEl = document.getElementById('status');
@@ -172,7 +175,7 @@
         }
         
         function toggleConnection() {
-            if (socket) {
+            if (socket || reconnectInterval) {
                 disconnect();
             } else {
                 connect();
@@ -187,24 +190,46 @@
             }
             
             localStorage.setItem('redeploy_key', key);
+            reconnectAttempts = 0;
+            attemptConnection();
+        }
+        
+        function attemptConnection() {
+            const key = apiKeyInput.value.trim();
             
             // Connect to Socket.IO
             socket = io();
             
             socket.on('connect', () => {
+                reconnectAttempts = 0;
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
                 updateStatus('Connected', 'connected');
                 connectBtn.textContent = 'Disconnect';
                 streamBtn.disabled = false;
                 addLogLine('Connected to server', 'info');
+                
+                // Auto-resubscribe if we were streaming
+                if (isStreaming) {
+                    socket.emit('logs:subscribe', { key });
+                }
             });
             
             socket.on('disconnect', () => {
                 updateStatus('Disconnected', 'disconnected');
-                connectBtn.textContent = 'Connect';
-                streamBtn.disabled = true;
-                streamBtn.textContent = 'Start Stream';
-                isStreaming = false;
                 addLogLine('Disconnected from server', 'error');
+                
+                // Don't auto-reconnect if user manually disconnected
+                if (connectBtn.textContent === 'Disconnect') {
+                    startReconnect();
+                }
+            });
+            
+            socket.on('connect_error', () => {
+                addLogLine('Connection failed, retrying...', 'error');
+                startReconnect();
             });
             
             socket.on('logs:info', (data) => {
@@ -220,7 +245,6 @@
             
             socket.on('logs:data', (data) => {
                 data.lines.forEach(line => {
-                    // Color code based on content
                     let type = '';
                     if (line.includes('ERROR') || line.includes('error') || line.includes('failed')) {
                         type = 'error';
@@ -232,7 +256,37 @@
             });
         }
         
+        function startReconnect() {
+            if (reconnectInterval) return;
+            
+            updateStatus('Reconnecting...', 'disconnected');
+            
+            reconnectInterval = setInterval(() => {
+                reconnectAttempts++;
+                if (reconnectAttempts > maxReconnectAttempts) {
+                    addLogLine('Max reconnect attempts reached. Giving up.', 'error');
+                    disconnect();
+                    return;
+                }
+                
+                addLogLine(`Reconnecting... (attempt ${reconnectAttempts}/${maxReconnectAttempts})`, 'info');
+                
+                // Clean up old socket
+                if (socket) {
+                    socket.disconnect();
+                    socket = null;
+                }
+                
+                attemptConnection();
+            }, 10000); // Try every 10 seconds
+        }
+        
         function disconnect() {
+            if (reconnectInterval) {
+                clearInterval(reconnectInterval);
+                reconnectInterval = null;
+            }
+            
             if (socket) {
                 if (isStreaming) {
                     socket.emit('logs:unsubscribe');
@@ -241,14 +295,18 @@
                 socket.disconnect();
                 socket = null;
             }
+            
             updateStatus('Disconnected', 'disconnected');
             connectBtn.textContent = 'Connect';
             streamBtn.disabled = true;
             streamBtn.textContent = 'Start Stream';
+            addLogLine('Disconnected by user', 'info');
         }
         
         function toggleStream() {
             if (!socket) return;
+            
+            const key = apiKeyInput.value.trim();
             
             if (isStreaming) {
                 socket.emit('logs:unsubscribe');
@@ -256,7 +314,6 @@
                 updateStatus('Connected', 'connected');
                 isStreaming = false;
             } else {
-                const key = apiKeyInput.value.trim();
                 socket.emit('logs:subscribe', { key });
                 streamBtn.textContent = 'Stop Stream';
                 updateStatus('Streaming', 'streaming');
