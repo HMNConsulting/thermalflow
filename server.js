@@ -502,9 +502,9 @@ app.prepare().then(() => {
 
     // Printing is now handled by standalone print-server.js on port 3001 proxyed via /api/* above
 
-    // --- Task Capture Endpoint (adds task to web UI) ---
+    // --- Task Capture Endpoint (adds task to web UI + prints) ---
     expressApp.post('/api/tasks/capture', async (req, res) => {
-        const { title, parentId = 'root' } = req.body;
+        const { title, parentId = 'root', print = true } = req.body;
 
         if (!title || typeof title !== 'string' || title.trim().length === 0) {
             return res.status(400).json({ error: 'title is required and must be a non-empty string' });
@@ -555,8 +555,30 @@ app.prepare().then(() => {
             });
         }
 
-        console.log(`Task captured via API: "${title}" (id: ${newId})`);
-        res.json({ success: true, taskId: newId, task: newTask });
+        // Also print if requested (default: true)
+        let printResult = null;
+        if (print) {
+            try {
+                const printResponse = await fetch(`${PRINT_SERVER_BASE}/print-single`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ taskName: title.trim() })
+                });
+                printResult = await printResponse.json();
+            } catch (printError) {
+                console.error('Task captured but print failed:', printError);
+                printResult = { error: 'Print failed' };
+            }
+        }
+
+        console.log(`Task captured via API: "${title}" (id: ${newId}, printed: ${print})`);
+        res.json({ 
+            success: true, 
+            taskId: newId, 
+            task: newTask,
+            printed: print,
+            printResult 
+        });
     });
 
     // --- Next.js Handling ---
