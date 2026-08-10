@@ -293,7 +293,6 @@ const templates = {
         if (tasks && Array.isArray(tasks)) {
             sanitizeTasks(tasks).forEach(task => printer.text(`  ${task}`));
         }
-        printer.text('================================');
     }
 };
 
