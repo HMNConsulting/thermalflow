@@ -234,7 +234,7 @@ function sanitizeText(text) {
         .replace(/•/g, '-')           // bullet
         .replace(/[—–]/g, '--')       // em/en dash
         .replace(/['']/g, "'")        // smart quotes
-        .replace(/[" "]/g, '"')       // smart double quotes
+        .replace(/[""]/g, '"')        // smart double quotes
         .replace(/°/g, ' deg')        // degree symbol
         .replace(/…/g, '...')         // ellipsis
         .replace(/×/g, 'x')           // multiplication sign
@@ -243,7 +243,8 @@ function sanitizeText(text) {
         .replace(/¼/g, '1/4')
         .replace(/¾/g, '3/4')
         .replace(/⅓/g, '1/3')
-        .replace(/⅔/g, '2/3');
+        .replace(/⅔/g, '2/3')
+        .replace(/[^\x00-\x7F]/g, ''); // Remove any remaining non-ASCII chars
 }
 
 function sanitizeTasks(tasks) {
@@ -325,7 +326,7 @@ function performPrint(title, date, tasks, imageStr, templateName) {
                 device = new escpos.USB(0x4b8, 0xe28);
             }
 
-            const options = { encoding: "GB18030" };
+            const options = { encoding: "ascii" };
             const printer = new escpos.Printer(device, options);
 
             device.open(function (error) {
@@ -413,7 +414,7 @@ function performSinglePrint(taskName) {
                 device = new escpos.USB(0x4b8, 0xe28);
             }
 
-            const options = { encoding: "GB18030" };
+            const options = { encoding: "ascii" };
             const printer = new escpos.Printer(device, options);
 
             device.open(function (error) {
@@ -621,7 +622,7 @@ function performBarcodePrint(data, format, title) {
                 device = new escpos.USB(0x4b8, 0xe28);
             }
 
-            const options = { encoding: "GB18030" };
+            const options = { encoding: "ascii" };
             const printer = new escpos.Printer(device, options);
 
             device.open(function (error) {
