@@ -652,30 +652,43 @@ app.prepare().then(() => {
 
         // Spawn appropriate detached deployment script
         const isWin = process.platform === "win32";
-        let cmd, args;
-
+        
         if (isWin) {
-            cmd = 'powershell.exe';
-            args = [
+            // On Windows, use 'start' command to fully detach the process
+            // This ensures the script survives when the parent (this server) exits
+            const scriptPath = path.join(__dirname, 'redeploy.ps1');
+            const logPath = path.join(__dirname, 'redeploy-trigger.log');
+            
+            // Use cmd /c start to create a truly independent process
+            const subprocess = spawn('cmd.exe', [
+                '/c', 'start', '/min', 'powershell.exe',
                 '-ExecutionPolicy', 'Bypass',
-                '-File', path.join(__dirname, 'redeploy.ps1')
-            ];
+                '-File', scriptPath
+            ], {
+                detached: true,
+                stdio: 'ignore',
+                cwd: __dirname,
+                shell: true
+            });
+            
+            subprocess.unref();
+            
         } else {
-            cmd = 'bash';
-            args = [path.join(__dirname, 'redeploy.sh')];
-            // ensure the script is executable
+            // Linux/Mac
+            const subprocess = spawn('bash', [
+                path.join(__dirname, 'redeploy.sh')
+            ], {
+                detached: true,
+                stdio: 'ignore',
+                cwd: __dirname
+            });
+            
             try {
-                fs.chmodSync(args[0], '755');
+                fs.chmodSync(path.join(__dirname, 'redeploy.sh'), '755');
             } catch (e) { }
+            
+            subprocess.unref();
         }
-
-        const subprocess = spawn(cmd, args, {
-            detached: true,
-            stdio: 'ignore',
-            cwd: __dirname
-        });
-
-        subprocess.unref();
 
         res.json({ message: 'Redeploy triggered. Server will restart shortly.' });
 
