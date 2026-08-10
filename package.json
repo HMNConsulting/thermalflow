@@ -42,8 +42,12 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/body-parser": "^1.19.5",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
     "@types/node": "^25",
     "@types/node-cron": "^3.0.11",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^9.2.1",
