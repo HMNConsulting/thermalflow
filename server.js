@@ -595,15 +595,24 @@ app.prepare().then(() => {
         if (!id || typeof id !== 'string' || !masterState.tasks[id]) {
             return res.status(404).send(`
                 <!DOCTYPE html>
-                <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+                <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
                 <title>ThermalFlow - Task Not Found</title>
                 <style>
                     body { background: #09090b; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center; }
-                    .card { border: 1px solid #27272a; padding: 32px 24px; border-radius: 16px; background: #18181b; max-width: 380px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.6); }
+                    .card { border: 1px solid #27272a; padding: 36px 24px; border-radius: 20px; background: #18181b; max-width: 400px; width: 100%; box-shadow: 0 25px 50px rgba(0,0,0,0.7); }
+                    .icon { font-size: 48px; margin-bottom: 12px; }
                     h2 { margin: 0 0 8px 0; font-size: 20px; color: #ef4444; }
-                    p { color: #a1a1aa; margin: 0; font-size: 14px; }
+                    p { color: #a1a1aa; margin: 0 0 24px 0; font-size: 14px; }
+                    .btn-primary { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px 20px; background: #f4f4f5; color: #09090b; font-weight: 700; font-size: 14px; border-radius: 12px; text-decoration: none; box-sizing: border-box; }
                 </style></head>
-                <body><div class="card"><h2>Task Not Found</h2><p>This task may have been deleted or does not exist.</p></div></body></html>
+                <body>
+                    <div class="card">
+                        <div class="icon">🔍</div>
+                        <h2>Task Not Found</h2>
+                        <p>This task may have been deleted or archived.</p>
+                        <a href="/" class="btn-primary">Return to Task Board &rarr;</a>
+                    </div>
+                </body></html>
             `);
         }
 
@@ -627,16 +636,138 @@ app.prepare().then(() => {
 
         res.send(`
             <!DOCTYPE html>
-            <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+            <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             <title>ThermalFlow - Scan-to-Done</title>
             <style>
-                body { background: #09090b; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center; }
-                .card { border: 1px solid #27272a; padding: 36px 24px; border-radius: 20px; background: #18181b; max-width: 400px; width: 100%; box-shadow: 0 25px 50px rgba(0,0,0,0.7); }
-                .icon { font-size: 48px; margin-bottom: 16px; }
-                .app-name { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #71717a; margin-bottom: 8px; font-weight: 700; }
-                h1 { margin: 0 0 16px 0; font-size: 22px; word-break: break-word; line-height: 1.3; }
-                .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; border-radius: 9999px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; ${newCompleted ? 'background: #052e16; color: #4ade80; border: 1px solid #166534;' : 'background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46;'} }
-                .hint { margin-top: 24px; font-size: 12px; color: #71717a; }
+                * { box-sizing: border-box; }
+                body {
+                    background: #09090b;
+                    color: #f4f4f5;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    padding: 20px;
+                    text-align: center;
+                }
+                .card {
+                    border: 1px solid #27272a;
+                    padding: 36px 24px;
+                    border-radius: 24px;
+                    background: #18181b;
+                    max-width: 420px;
+                    width: 100%;
+                    box-shadow: 0 25px 60px rgba(0,0,0,0.8);
+                }
+                .icon { font-size: 52px; margin-bottom: 16px; }
+                .app-name {
+                    font-size: 11px;
+                    text-transform: uppercase;
+                    letter-spacing: 2px;
+                    color: #71717a;
+                    margin-bottom: 10px;
+                    font-weight: 700;
+                }
+                h1 {
+                    margin: 0 0 16px 0;
+                    font-size: 22px;
+                    word-break: break-word;
+                    line-height: 1.35;
+                }
+                .status-badge {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 6px 16px;
+                    border-radius: 9999px;
+                    font-size: 13px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    ${newCompleted ? 'background: #052e16; color: #4ade80; border: 1px solid #166534;' : 'background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46;'}
+                }
+                .hint {
+                    margin: 16px 0 24px 0;
+                    font-size: 13px;
+                    color: #a1a1aa;
+                    line-height: 1.4;
+                }
+                .actions {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                    margin-bottom: 20px;
+                }
+                .btn {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                    width: 100%;
+                    padding: 14px 20px;
+                    border-radius: 14px;
+                    font-size: 15px;
+                    font-weight: 700;
+                    text-decoration: none;
+                    cursor: pointer;
+                    transition: all 0.15s ease-in-out;
+                    border: none;
+                }
+                .btn:active { transform: scale(0.98); }
+                .btn-primary {
+                    background: #f4f4f5;
+                    color: #09090b;
+                    box-shadow: 0 4px 14px rgba(255,255,255,0.12);
+                }
+                .btn-primary:hover { background: #ffffff; }
+                .btn-secondary {
+                    background: #27272a;
+                    color: #d4d4d8;
+                    border: 1px solid #3f3f46;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+                .btn-secondary:hover { background: #3f3f46; color: #f4f4f5; }
+                .redirect-notice {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    font-size: 12px;
+                    color: #71717a;
+                    margin-top: 8px;
+                }
+                .cancel-btn {
+                    background: none;
+                    border: none;
+                    color: #38bdf8;
+                    cursor: pointer;
+                    font-size: 12px;
+                    text-decoration: underline;
+                    padding: 0;
+                    font-family: inherit;
+                }
+                .progress-container {
+                    width: 100%;
+                    height: 3px;
+                    background: #27272a;
+                    border-radius: 2px;
+                    overflow: hidden;
+                    margin-top: 14px;
+                }
+                .progress-bar {
+                    height: 100%;
+                    background: #4ade80;
+                    width: 100%;
+                    transform-origin: left;
+                    animation: drain 5s linear forwards;
+                }
+                @keyframes drain {
+                    from { transform: scaleX(1); }
+                    to { transform: scaleX(0); }
+                }
             </style></head>
             <body>
                 <div class="card">
@@ -644,11 +775,55 @@ app.prepare().then(() => {
                     <div class="app-name">ThermalFlow Slip Verified</div>
                     <h1>${task.title.replace(/</g, '&lt;')}</h1>
                     <div class="status-badge">${newCompleted ? '● Marked Completed' : '● Reopened'}</div>
-                    <div class="hint">Your digital board has been updated in real-time.</div>
+                    <div class="hint">Your digital task board has been updated in real-time.</div>
+
+                    <div class="actions">
+                        <a href="/?select=${encodeURIComponent(task.id)}" id="primary-link" class="btn btn-primary">
+                            <span>Open Task Board</span> &rarr;
+                        </a>
+                        <a href="/api/tasks/toggle-qr?id=${encodeURIComponent(task.id)}" class="btn btn-secondary">
+                            <span>&#8635; Toggle Again (Undo)</span>
+                        </a>
+                    </div>
+
+                    <div class="redirect-notice" id="redirect-banner">
+                        <span>Auto-opening board in <strong id="timer">5</strong>s...</span>
+                        <span>&middot;</span>
+                        <button type="button" class="cancel-btn" onclick="cancelRedirect()">Stay here</button>
+                    </div>
+                    <div class="progress-container" id="pbar-container">
+                        <div class="progress-bar" id="pbar"></div>
+                    </div>
                 </div>
+
+                <script>
+                    let timeLeft = 5;
+                    const timerEl = document.getElementById('timer');
+                    const bannerEl = document.getElementById('redirect-banner');
+                    const pbarContainer = document.getElementById('pbar-container');
+                    let cancelled = false;
+
+                    const interval = setInterval(() => {
+                        if (cancelled) return;
+                        timeLeft--;
+                        if (timerEl) timerEl.textContent = timeLeft;
+                        if (timeLeft <= 0) {
+                            clearInterval(interval);
+                            window.location.href = '/?select=${encodeURIComponent(task.id)}';
+                        }
+                    }, 1000);
+
+                    function cancelRedirect() {
+                        cancelled = true;
+                        clearInterval(interval);
+                        if (bannerEl) bannerEl.innerHTML = '<span style="color:#a1a1aa">Auto-redirect paused.</span>';
+                        if (pbarContainer) pbarContainer.style.display = 'none';
+                    }
+                </script>
             </body></html>
         `);
     });
+
 
     // --- Task Capture Endpoint (adds task to web UI + prints) ---
 
