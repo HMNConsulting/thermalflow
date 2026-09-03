@@ -983,9 +983,10 @@ app.prepare().then(() => {
 
         // 1. Try Gemini API if key is present
         const geminiKey = process.env.GEMINI_API_KEY;
+        const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
         if (geminiKey) {
             try {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1014,11 +1015,15 @@ Goal: "${goal}"`
                             return res.json({ title: goal, subtasks: parsed.slice(0, 6) });
                         }
                     }
+                } else {
+                    const errData = await response.json().catch(() => ({}));
+                    console.warn(`Gemini (${geminiModel}) response error:`, response.status, errData);
                 }
             } catch (err) {
-                console.warn('Gemini decomposition failed, falling back to heuristic engine:', err.message);
+                console.warn(`Gemini (${geminiModel}) decomposition failed, falling back to heuristic engine:`, err.message);
             }
         }
+
 
         // 2. Try OpenAI API if key is present
         const openAiKey = process.env.OPENAI_API_KEY;
