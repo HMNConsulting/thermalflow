@@ -4,12 +4,15 @@ import { useState, useRef, useEffect } from 'react';
 import { useTaskStore } from '@/lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { Input } from '@/components/ui/input';
-import { LayersPlus, CornerDownRight, X } from 'lucide-react';
+import { LayersPlus, CornerDownRight, X, Sparkles } from 'lucide-react';
 import { cn, getPrintServerUrl } from '@/lib/utils';
+import { DecomposeModal } from './DecomposeModal';
 
 export default function GlobalTaskInput() {
     const [title, setTitle] = useState('');
+    const [isDecomposeOpen, setIsDecomposeOpen] = useState(false);
     const addTask = useTaskStore(state => state.addTask);
+
     const addTasksBatch = useTaskStore(state => state.addTasksBatch);
     const selectedTaskId = useTaskStore(state => state.selectedTaskId);
     const selectTask = useTaskStore(state => state.selectTask);
@@ -111,8 +114,17 @@ export default function GlobalTaskInput() {
                         />
                     </div>
                     <button
+                        type="button"
+                        onClick={() => setIsDecomposeOpen(true)}
+                        className="h-12 w-12 flex items-center justify-center rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/20 hover:scale-105 active:scale-95 transition-all shadow-sm"
+                        title="AI Sparkle: Decompose goal into subtasks & print checklist"
+                    >
+                        <Sparkles size={18} />
+                    </button>
+                    <button
                         type="submit"
                         className="h-12 w-12 flex items-center justify-center rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:scale-105 active:scale-95 transition-all shadow-lg"
+                        title="Add task"
                     >
                         <LayersPlus size={20} />
                     </button>
@@ -125,6 +137,16 @@ export default function GlobalTaskInput() {
                 <span>•</span>
                 <span>Press <kbd className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded border border-zinc-200 dark:border-zinc-700 font-bold">ENTER</kbd> to save</span>
             </div>
+
+            {isDecomposeOpen && (
+                <DecomposeModal
+                    open={isDecomposeOpen}
+                    onOpenChange={setIsDecomposeOpen}
+                    taskId={selectedTaskId}
+                    initialTitle={title || selectedTask?.title || ''}
+                />
+            )}
         </div>
     );
 }
+

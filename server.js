@@ -905,6 +905,165 @@ app.prepare().then(() => {
         });
     });
 
+    // --- AI Task Decomposition Engine & Endpoint ---
+    function generateHeuristicSubtasks(goal) {
+        const lower = goal.toLowerCase();
+
+        if (lower.includes('fix') || lower.includes('repair') || lower.includes('replace') || lower.includes('spring') || lower.includes('door') || lower.includes('leak') || lower.includes('car') || lower.includes('bike')) {
+            return [
+                `Inspect & diagnose root cause`,
+                `Identify & source replacement parts`,
+                `Disconnect power & secure work area`,
+                `Remove worn parts & install new units`,
+                `Test complete cycle & lubricate moving parts`
+            ];
+        }
+        if (lower.includes('buy') || lower.includes('shop') || lower.includes('purchase') || lower.includes('order')) {
+            return [
+                `Research top-rated models & read reviews`,
+                `Compare pricing & check return policy`,
+                `Confirm exact measurements & specs`,
+                `Place order or pick up locally`,
+                `Unpack & inspect against packing slip`
+            ];
+        }
+        if (lower.includes('clean') || lower.includes('organize') || lower.includes('garage') || lower.includes('closet') || lower.includes('room') || lower.includes('desk')) {
+            return [
+                `Sort items: Keep, Donate, Trash`,
+                `Wipe down shelves & vacuum surfaces`,
+                `Box up donations & discard trash bags`,
+                `Arrange remaining items into labeled bins`,
+                `Perform final visual walkthrough`
+            ];
+        }
+        if (lower.includes('plan') || lower.includes('trip') || lower.includes('travel') || lower.includes('party') || lower.includes('event')) {
+            return [
+                `Finalize dates, budget & guest list`,
+                `Book accommodations & transport`,
+                `Prepare day-by-day itinerary`,
+                `Pack gear using master checklist`,
+                `Review emergency contacts & confirmations`
+            ];
+        }
+        if (lower.includes('tax') || lower.includes('renew') || lower.includes('registration') || lower.includes('dmv') || lower.includes('doctor') || lower.includes('bill') || lower.includes('insurance')) {
+            return [
+                `Gather required identification & documents`,
+                `Fill out application or online portal forms`,
+                `Pay required processing fees`,
+                `Save confirmation receipt to records`,
+                `Calendar renewal deadline for next year`
+            ];
+        }
+        if (lower.includes('code') || lower.includes('build') || lower.includes('feature') || lower.includes('bug') || lower.includes('api') || lower.includes('website')) {
+            return [
+                `Reproduce behavior & draft technical plan`,
+                `Implement changes in isolated branch`,
+                `Run automated test suite & verify edge cases`,
+                `Review pull request & merge to main`,
+                `Deploy update to production & verify`
+            ];
+        }
+
+        // Universal practical fallback
+        return [
+            `Define scope & gather materials for ${goal.slice(0, 20)}`,
+            `Prepare work area & eliminate blockers`,
+            `Execute core action phase`,
+            `Verify quality & resolve loose ends`,
+            `Review final result & mark complete`
+        ];
+    }
+
+    expressApp.post('/api/tasks/decompose', async (req, res) => {
+        const { title } = req.body;
+        if (!title || typeof title !== 'string' || !title.trim()) {
+            return res.status(400).json({ error: 'title is required' });
+        }
+        const goal = title.trim();
+
+        // 1. Try Gemini API if key is present
+        const geminiKey = process.env.GEMINI_API_KEY;
+        if (geminiKey) {
+            try {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{
+                            parts: [{
+                                text: `You are an expert practical organizer and project breakdown assistant for a physical thermal task receipt system.
+Break down the following goal or task into 3 to 5 clear, concrete, sequential, actionable steps.
+Each step must be short (under 45 characters, ideally starting with an action verb) so it fits neatly on a narrow thermal chit.
+Return ONLY a valid JSON array of strings, e.g. ["Step 1", "Step 2", "Step 3"]. No markdown formatting, no commentary.
+
+Goal: "${goal}"`
+                            }]
+                        }],
+                        generationConfig: {
+                            responseMimeType: "application/json"
+                        }
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (text) {
+                        const parsed = JSON.parse(text);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            return res.json({ title: goal, subtasks: parsed.slice(0, 6) });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn('Gemini decomposition failed, falling back to heuristic engine:', err.message);
+            }
+        }
+
+        // 2. Try OpenAI API if key is present
+        const openAiKey = process.env.OPENAI_API_KEY;
+        if (openAiKey) {
+            try {
+                const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${openAiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: 'Break down the user goal into 3 to 5 short, concrete, sequential actionable steps (under 45 chars each). Return ONLY a JSON array of strings.'
+                            },
+                            { role: 'user', content: goal }
+                        ]
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const content = data?.choices?.[0]?.message?.content;
+                    if (content) {
+                        const parsed = JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
+                        const list = Array.isArray(parsed) ? parsed : (parsed.steps || parsed.tasks || parsed.subtasks || Object.values(parsed));
+                        if (Array.isArray(list) && list.length > 0) {
+                            return res.json({ title: goal, subtasks: list.slice(0, 6).map(String) });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn('OpenAI decomposition failed, falling back to heuristic engine:', err.message);
+            }
+        }
+
+        // 3. Fallback: Intelligent semantic heuristic engine
+        const subtasks = generateHeuristicSubtasks(goal);
+        res.json({ title: goal, subtasks });
+    });
+
+
     // --- Next.js Handling ---
     expressApp.post('/api/admin/redeploy', (req, res) => {
         const key = req.headers['x-redeploy-key'];

@@ -6,6 +6,7 @@ import { useTaskStore, Task } from '@/lib/store';
 import { Search, Printer, Volume2, VolumeX, Sparkles, CheckCircle2, LayoutGrid, Columns, ArrowRight, CornerDownLeft, QrCode } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { DecomposeModal } from './DecomposeModal';
 
 interface CommandPaletteProps {
     open: boolean;
@@ -15,11 +16,14 @@ interface CommandPaletteProps {
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
+    const [isDecomposeOpen, setIsDecomposeOpen] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
     const tasks = useTaskStore((state) => state.tasks);
+    const selectedTaskId = useTaskStore((state) => state.selectedTaskId);
     const selectTask = useTaskStore((state) => state.selectTask);
     const toggleTask = useTaskStore((state) => state.toggleTask);
+
     const viewMode = useTaskStore((state) => state.viewMode);
     const setViewMode = useTaskStore((state) => state.setViewMode);
     const autoPrintEnabled = useTaskStore((state) => state.autoPrintEnabled);
@@ -105,6 +109,16 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                 }
             },
             {
+                id: 'ai-decompose',
+                title: selectedTaskId && tasks[selectedTaskId]
+                    ? `AI Sparkle: Decompose "${tasks[selectedTaskId].title}" into subtasks`
+                    : 'AI Sparkle: Decompose a goal into sequential subtasks',
+                icon: <Sparkles size={16} className="text-amber-400" />,
+                run: () => {
+                    setIsDecomposeOpen(true);
+                }
+            },
+            {
                 id: 'toggle-completed',
                 title: "Toggle Completed Column Panel",
                 icon: <CheckCircle2 size={16} />,
@@ -116,7 +130,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
         if (!q) return actions;
         return actions.filter(a => a.title.toLowerCase().includes(q));
-    }, [query, autoPrintEnabled, qrOnChits, soundEnabled, viewMode, toggleAutoPrint, toggleQrOnChits, toggleSound, setViewMode, toggleCompletedColumn]);
+    }, [query, autoPrintEnabled, qrOnChits, soundEnabled, viewMode, selectedTaskId, tasks, toggleAutoPrint, toggleQrOnChits, toggleSound, setViewMode, toggleCompletedColumn]);
+
 
     const allItems = useMemo(() => {
         return [...taskResults, ...actionResults.map(a => ({ type: 'action' as const, action: a }))];
@@ -153,7 +168,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     };
 
     return (
+        <>
         <Dialog open={open} onOpenChange={onOpenChange}>
+
             <DialogContent showCloseButton={false} aria-describedby={undefined} className="sm:max-w-xl bg-white dark:bg-zinc-950 p-0 border border-zinc-200 dark:border-zinc-800 shadow-2xl rounded-2xl overflow-hidden font-mono top-[30%]">
                 <DialogTitle className="sr-only">Command Palette & Quick Search</DialogTitle>
 
@@ -260,5 +277,16 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                 </div>
             </DialogContent>
         </Dialog>
+
+        {isDecomposeOpen && (
+            <DecomposeModal
+                open={isDecomposeOpen}
+                onOpenChange={setIsDecomposeOpen}
+                taskId={selectedTaskId}
+                initialTitle={selectedTaskId && tasks[selectedTaskId] ? tasks[selectedTaskId].title : ''}
+            />
+        )}
+        </>
     );
 }
+

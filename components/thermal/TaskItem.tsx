@@ -3,10 +3,12 @@
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { useTask, useTaskStore, useTaskProgress } from '@/lib/store';
 import { Checkbox } from '../ui/checkbox';
-import { Trash2, Printer, Edit2, AlertCircle } from 'lucide-react';
+import { Trash2, Printer, Edit2, AlertCircle, Sparkles } from 'lucide-react';
 import { cn, getPrintServerUrl } from '@/lib/utils';
 import { getUserColor } from '@/lib/users';
 import { toast } from 'sonner';
+import { DecomposeModal } from './DecomposeModal';
+
 
 interface TaskItemProps {
     taskId: string;
@@ -35,7 +37,9 @@ export const TaskItem = memo(function TaskItem({
     const [isEditing, setIsEditing] = useState(false);
     const [editTitle, setEditTitle] = useState('');
     const [isPrinting, setIsPrinting] = useState(false);
+    const [isDecomposeOpen, setIsDecomposeOpen] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+
 
     useEffect(() => {
         if (isEditing) {
@@ -221,6 +225,18 @@ export const TaskItem = memo(function TaskItem({
                     <Printer size={13} className={isPrinting ? 'animate-spin' : ''} />
                 </button>
 
+                {/* AI Sparkle Decompose */}
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setIsDecomposeOpen(true);
+                    }}
+                    className="p-1.5 md:p-1 hover:bg-amber-100 dark:hover:bg-amber-950/40 text-zinc-400 hover:text-amber-500 rounded transition-colors"
+                    title="AI Sparkle: Decompose goal into subtasks & print checklist"
+                >
+                    <Sparkles size={13} />
+                </button>
+
                 {/* Edit Title */}
                 <button
                     onClick={handleStartEdit}
@@ -251,6 +267,16 @@ export const TaskItem = memo(function TaskItem({
                     <Trash2 size={13} />
                 </button>
             </div>
+
+            {isDecomposeOpen && (
+                <DecomposeModal
+                    open={isDecomposeOpen}
+                    onOpenChange={setIsDecomposeOpen}
+                    taskId={task.id}
+                    initialTitle={task.title}
+                />
+            )}
         </div>
     );
 });
+

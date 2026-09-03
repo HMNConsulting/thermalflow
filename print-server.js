@@ -504,6 +504,73 @@ function performSinglePrint(taskName, options = {}) {
     });
 }
 
+function performActionPlanPrint(goalTitle, subtasks) {
+    return new Promise((resolve, reject) => {
+        try {
+            const device = new escpos.USB(PRINTER_VID, PRINTER_PID);
+            const printer = new escpos.Printer(device, { encoding: 'ASCII' });
+
+            device.open(async (error) => {
+                if (error) {
+                    logger.error("Could not open USB device for Action Plan:", error);
+                    return reject(new Error('Failed to open USB device'));
+                }
+
+                try {
+                    printer.align('ct').style('b').size(1, 1).text('ACTION PLAN').size(0, 0).style('normal');
+                    printer.text('================================');
+                    printer.style('b').text(sanitizeAscii(goalTitle.toUpperCase())).style('normal');
+                    printer.text(new Date().toLocaleString());
+                    printer.text('--------------------------------');
+
+                    for (let i = 0; i < subtasks.length; i++) {
+                        const item = subtasks[i];
+                        const stepText = typeof item === 'string' ? item : item.title;
+                        const qrUrl = typeof item === 'object' ? item.qrUrl : null;
+
+                        printer.align('lt').style('b').text(`[ ] STEP ${i + 1}:`).style('normal');
+                        printer.text(`    ${sanitizeAscii(stepText)}`);
+
+                        if (qrUrl) {
+                            try {
+                                const qrBuffer = await QRCode.toBuffer(qrUrl, {
+                                    type: 'png',
+                                    width: 120,
+                                    margin: 1
+                                });
+                                const image = await escpos.Image.load(qrBuffer, 'image/png');
+                                printer.align('ct').image(image, 's8');
+                                printer.align('ct').text('SCAN TO COMPLETE');
+                            } catch (qrErr) {
+                                logger.warn("Step QR generation failed:", qrErr.message);
+                            }
+                        }
+
+                        if (i < subtasks.length - 1) {
+                            printer.align('ct').text('- - - - - - - - - - - - - - - -');
+                        }
+                    }
+
+                    printer.text('================================');
+                    printer.align('ct').text('*** TEAR-OFF ACTION CHECKLIST ***');
+                    printer.feed(2).cut().close(() => {
+                        logger.info(`Action Plan printed successfully: "${goalTitle}" (${subtasks.length} steps)`);
+                        resolve({ success: true });
+                    });
+                } catch (printErr) {
+                    logger.error("Print execution error in Action Plan:", printErr);
+                    try { device.close(); } catch (e) { }
+                    reject(printErr);
+                }
+            });
+        } catch (e) {
+            logger.error("USB Device Init Failed for Action Plan:", e.message);
+            reject(new Error('Printer device not found'));
+        }
+    });
+}
+
+
 
 // --- API Endpoints ---
 
@@ -598,6 +665,30 @@ app.post('/print-single', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Action Plan Checklist Print Endpoint
+app.post('/print-action-plan', async (req, res) => {
+    const { goalTitle, subtasks } = req.body;
+    if (!goalTitle || typeof goalTitle !== 'string') {
+        return res.status(400).json({ error: 'goalTitle is required' });
+    }
+    if (!subtasks || !Array.isArray(subtasks) || subtasks.length === 0) {
+        return res.status(400).json({ error: 'subtasks must be a non-empty array' });
+    }
+
+    logger.info(`Queueing Action Plan Print: "${goalTitle}" with ${subtasks.length} steps`);
+    try {
+        await addToQueue(
+            () => performActionPlanPrint(goalTitle.trim(), subtasks),
+            'action-plan',
+            { goalTitle: goalTitle.substring(0, 50), stepsCount: subtasks.length }
+        );
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 
 
 // QR Code Generation Endpoint
