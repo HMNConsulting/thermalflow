@@ -59,18 +59,26 @@ try {
 const app = express();
 const port = process.env.PRINT_SERVER_PORT || 3001;
 
+app.set('trust proxy', 1);
+
 // --- Rate Limiting ---
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    max: 500, // Increased limit
     message: { error: 'Too many requests, please try again later.' },
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    skip: (req) => {
+        // Always allow internal loopback requests from server.js proxy
+        const ip = req.ip || req.connection?.remoteAddress;
+        return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+    }
 });
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
 app.use(limiter);
+
 
 // --- Queue Persistence ---
 const QUEUE_FILE = path.join(__dirname, 'print-queue.json');
@@ -398,7 +406,11 @@ function performPrint(title, date, tasks, imageStr, templateName) {
 }
 
 // Helper function for individual task printing
-function performSinglePrint(taskName) {
+function performSinglePrint(taskName, options = {}) {
+    const { qrUrl, priority } = options;
+    const isUrgent = priority === 'urgent' || taskName.includes('!urgent') || taskName.includes('!high');
+    const cleanTitle = sanitizeText(taskName.replace(/!urgent|!high/gi, '').trim());
+
     return new Promise((resolve, reject) => {
         try {
             let device;
@@ -414,35 +426,75 @@ function performSinglePrint(taskName) {
                 device = new escpos.USB(0x4b8, 0xe28);
             }
 
-            const options = { encoding: "ascii" };
-            const printer = new escpos.Printer(device, options);
+            const printOptions = { encoding: "ascii" };
+            const printer = new escpos.Printer(device, printOptions);
 
-            device.open(function (error) {
+            device.open(async function (error) {
                 if (error) {
                     logger.error("Printer Connection Error:", error);
                     return reject(new Error('Printer not ready'));
                 }
 
-                logger.info(`Printing individual task: ${taskName}`);
+                logger.info(`Printing individual task: ${cleanTitle}`);
 
                 printer
                     .font('a')
                     .align('ct')
-                    .style('b')
+                    .style('b');
+
+                if (isUrgent) {
+                    printer
+                        .size(1, 1)
+                        .text('*** [ URGENT ] ***')
+                        .feed(1);
+                }
+
+                printer
                     .size(1, 1)
                     .text('------------------------')
                     .feed(1)
                     .size(2, 2)
-                    .text(sanitizeText(taskName))
+                    .text(cleanTitle)
                     .size(1, 1)
                     .feed(1)
-                    .text('------------------------')
-                    .feed(2)
-                    .cut()
-                    .close(() => {
-                        logger.info("Single Print Success");
-                        resolve();
-                    });
+                    .text('------------------------');
+
+                if (qrUrl) {
+                    try {
+                        const qrBuffer = await QRCode.toBuffer(qrUrl, {
+                            type: 'png',
+                            width: 140,
+                            margin: 1,
+                            color: { dark: '#000000', light: '#FFFFFF' }
+                        });
+                        escpos.Image.load(qrBuffer, 'image/png', function (img) {
+                            if (img) {
+                                printer
+                                    .feed(1)
+                                    .align('ct')
+                                    .raster(img)
+                                    .size(0, 0)
+                                    .text('SCAN TO COMPLETE');
+                            }
+                            finishPrint();
+                        });
+                        return;
+                    } catch (qrErr) {
+                        logger.warn("Mini QR generation failed on single print:", qrErr.message);
+                    }
+                }
+
+                finishPrint();
+
+                function finishPrint() {
+                    printer
+                        .feed(2)
+                        .cut()
+                        .close(() => {
+                            logger.info("Single Print Success");
+                            resolve();
+                        });
+                }
             });
 
         } catch (e) {
@@ -451,6 +503,7 @@ function performSinglePrint(taskName) {
         }
     });
 }
+
 
 // --- API Endpoints ---
 
@@ -522,7 +575,7 @@ app.post('/print', async (req, res) => {
 
 // Print Single Task
 app.post('/print-single', async (req, res) => {
-    const { taskName } = req.body;
+    const { taskName, qrUrl, priority } = req.body;
 
     // Input validation
     if (!taskName || typeof taskName !== 'string' || taskName.trim().length === 0) {
@@ -532,19 +585,20 @@ app.post('/print-single', async (req, res) => {
         return res.status(400).json({ error: 'taskName too long: max 200 chars' });
     }
 
-    logger.info(`Queueing Single Print: ${taskName}`);
+    logger.info(`Queueing Single Print: ${taskName}${qrUrl ? ' [WITH QR]' : ''}`);
 
     try {
         await addToQueue(
-            () => performSinglePrint(taskName.trim()),
+            () => performSinglePrint(taskName.trim(), { qrUrl, priority }),
             'single',
-            { taskName: taskName.substring(0, 50) }
+            { taskName: taskName.substring(0, 50), hasQR: !!qrUrl }
         );
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
+
 
 // QR Code Generation Endpoint
 app.post('/print-qr', async (req, res) => {

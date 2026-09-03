@@ -4,24 +4,34 @@ import { useTaskStore } from "@/lib/store";
 import { useEffect, useState } from "react";
 
 export function DailyProgress() {
-    const tasks = useTaskStore(state => state.tasks);
     const [mounted, setMounted] = useState(false);
 
     useEffect(() => {
         setMounted(true);
     }, []);
 
-    // Calculate completed today
-    const completedToday = Object.values(tasks).filter(t => {
-        if (!t.completed || !t.completedAt) return false;
-        const completedDate = new Date(t.completedAt);
+    const completedToday = useTaskStore((state) => {
         const today = new Date();
-        return completedDate.getDate() === today.getDate() &&
-            completedDate.getMonth() === today.getMonth() &&
-            completedDate.getFullYear() === today.getFullYear();
-    }).length;
+        const todayDate = today.getDate();
+        const todayMonth = today.getMonth();
+        const todayYear = today.getFullYear();
+
+        let count = 0;
+        for (const id in state.tasks) {
+            const t = state.tasks[id];
+            if (t.completed && t.completedAt) {
+                const d = new Date(t.completedAt);
+                if (d.getDate() === todayDate && d.getMonth() === todayMonth && d.getFullYear() === todayYear) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    });
 
     if (!mounted || completedToday === 0) return null;
+
+
 
     return (
         <div className="flex items-center gap-2 animate-in fade-in slide-in-from-top-1 duration-500">

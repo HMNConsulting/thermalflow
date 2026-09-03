@@ -35,6 +35,9 @@ yarn-debug.log*
 .stignore
 *.sync-conflict*
 temp.png
+print-queue.json
+tasks.json
+
 
 # env files (can opt-in for committing if needed)
 .env*

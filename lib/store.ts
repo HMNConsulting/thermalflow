@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { io, Socket } from 'socket.io-client';
 
@@ -14,6 +15,7 @@ export interface Task {
     createdAt?: number;
     completedAt?: number;
     createdBy: string;
+    priority?: 'normal' | 'high' | 'urgent';
     recurrence?: {
         frequency: 'daily' | 'weekly' | 'custom';
         cron: string;        // "0 9 * * *"
@@ -42,12 +44,29 @@ interface TaskStore {
     selectedTaskId: string | null;
     currentUser: string | null;
 
+    // Preferences & Settings
+    autoPrintEnabled: boolean;
+    toggleAutoPrint: () => void;
+    soundEnabled: boolean;
+    toggleSound: () => void;
+    qrOnChits: boolean;
+    toggleQrOnChits: () => void;
+
+    // Undo / Redo
+    undoStack: Record<string, Task>[];
+    redoStack: Record<string, Task>[];
+    undo: () => void;
+    redo: () => void;
+    canUndo: boolean;
+    canRedo: boolean;
+
     // Actions
     setCurrentUser: (email: string) => void;
-    addTask: (parentId: string, title: string) => void;
+    addTask: (parentId: string, title: string, priority?: 'normal' | 'high' | 'urgent') => void;
     addTasksBatch: (parentId: string, titles: string[]) => void;
     toggleTask: (id: string) => void;
     updateTaskTitle: (id: string, title: string) => void;
+    setTaskPriority: (id: string, priority?: 'normal' | 'high' | 'urgent') => void;
     setTaskRecurrence: (id: string, recurrence: Task['recurrence'] | undefined) => void;
     deleteTask: (id: string) => void;
     assignTask: (id: string, newCreator: string) => void;
@@ -88,6 +107,7 @@ interface TaskStore {
 }
 
 const INITIAL_ROOT_ID = 'root';
+
 
 // Socket Connection
 let socket: Socket;
@@ -148,6 +168,20 @@ export const useTaskStore = create<TaskStore>()(
             viewMode: 'column',
             lastAction: null,
 
+            // Preferences
+            autoPrintEnabled: false,
+            toggleAutoPrint: () => set((state) => ({ autoPrintEnabled: !state.autoPrintEnabled })),
+            soundEnabled: true,
+            toggleSound: () => set((state) => ({ soundEnabled: !state.soundEnabled })),
+            qrOnChits: true,
+            toggleQrOnChits: () => set((state) => ({ qrOnChits: !state.qrOnChits })),
+
+            // Undo / Redo
+            undoStack: [],
+            redoStack: [],
+            canUndo: false,
+            canRedo: false,
+
             setCurrentUser: (email) => set({ currentUser: email }),
             setCreatorFilter: (creator) => set((state) => ({
                 activeFilters: { creator },
@@ -159,7 +193,7 @@ export const useTaskStore = create<TaskStore>()(
             setShowCompleted: (show) => set({ showCompleted: show }),
             toggleCompletedColumn: () => set((state) => ({ showCompleted: !state.showCompleted })),
 
-            addTask: (parentId, title) => {
+            addTask: (parentId, title, priority) => {
                 const now = Date.now();
                 const newId = generateId();
 
@@ -177,13 +211,15 @@ export const useTaskStore = create<TaskStore>()(
                         children: [],
                         parentId,
                         createdAt: now,
-                        createdBy: state.currentUser || 'local'
+                        createdBy: state.currentUser || 'local',
+                        priority: priority || undefined
                     };
 
                     const updatedParent = {
                         ...parentTask,
                         children: [...parentTask.children, newId]
                     };
+
 
                     const changedTasks = {
                         [newId]: newTask,
@@ -260,6 +296,7 @@ export const useTaskStore = create<TaskStore>()(
             toggleTask: (id) => {
                 set((state) => {
                     const task = state.tasks[id];
+                    if (!task) return state;
                     const newCompleted = !task.completed;
 
                     let newSelectedId = state.selectedTaskId;
@@ -334,6 +371,10 @@ export const useTaskStore = create<TaskStore>()(
                     const newState = {
                         ...state,
                         tasks: newTasks,
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
                         selectedTaskId: newSelectedId,
                         path: newPath,
                         lastModified: now
@@ -345,7 +386,9 @@ export const useTaskStore = create<TaskStore>()(
 
             updateTaskTitle: (id, title) => {
                 set((state) => {
-                    const updatedTask = { ...state.tasks[id], title };
+                    const task = state.tasks[id];
+                    if (!task) return state;
+                    const updatedTask = { ...task, title };
                     const changedTasks = { [id]: updatedTask };
 
                     const newState = {
@@ -354,12 +397,87 @@ export const useTaskStore = create<TaskStore>()(
                             ...state.tasks,
                             ...changedTasks
                         },
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
                         lastModified: Date.now()
                     };
                     broadcastPatch(changedTasks);
                     return newState;
                 })
             },
+
+            setTaskPriority: (id, priority) => {
+                set((state) => {
+                    const task = state.tasks[id];
+                    if (!task || task.id === INITIAL_ROOT_ID) return state;
+                    const updatedTask = { ...task, priority };
+                    const changedTasks = { [id]: updatedTask };
+
+                    const newState = {
+                        ...state,
+                        tasks: {
+                            ...state.tasks,
+                            ...changedTasks
+                        },
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
+                        lastModified: Date.now()
+                    };
+                    broadcastPatch(changedTasks);
+                    return newState;
+                });
+            },
+
+            undo: () => {
+                set((state) => {
+                    if (state.undoStack.length === 0) return state;
+                    const newUndoStack = [...state.undoStack];
+                    const previousTasks = newUndoStack.pop()!;
+                    const newRedoStack = [...state.redoStack, state.tasks];
+                    const now = Date.now();
+
+                    const newState = {
+                        ...state,
+                        tasks: previousTasks,
+                        undoStack: newUndoStack,
+                        redoStack: newRedoStack,
+                        canUndo: newUndoStack.length > 0,
+                        canRedo: true,
+                        version: state.version + 1,
+                        lastModified: now
+                    };
+                    broadcastUpdate(newState);
+                    return newState;
+                });
+            },
+
+            redo: () => {
+                set((state) => {
+                    if (state.redoStack.length === 0) return state;
+                    const newRedoStack = [...state.redoStack];
+                    const nextTasks = newRedoStack.pop()!;
+                    const newUndoStack = [...state.undoStack, state.tasks];
+                    const now = Date.now();
+
+                    const newState = {
+                        ...state,
+                        tasks: nextTasks,
+                        undoStack: newUndoStack,
+                        redoStack: newRedoStack,
+                        canUndo: true,
+                        canRedo: newRedoStack.length > 0,
+                        version: state.version + 1,
+                        lastModified: now
+                    };
+                    broadcastUpdate(newState);
+                    return newState;
+                });
+            },
+
 
             setTaskRecurrence: (id, recurrence) => {
                 set((state) => {
@@ -474,6 +592,10 @@ export const useTaskStore = create<TaskStore>()(
                             ...newTasks,
                             [parent.id]: updatedParent
                         },
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
                         selectedTaskId: newSelectedId,
                         path: newPath,
                         lastModified: Date.now(),
@@ -481,6 +603,7 @@ export const useTaskStore = create<TaskStore>()(
                     };
                     broadcastPatch({ [parent.id]: updatedParent }, [id]);
                     return newState;
+
                 })
             },
 
@@ -662,7 +785,7 @@ export const useTaskStore = create<TaskStore>()(
         {
             name: 'thermalflow-storage',
             partialize: (state) => {
-                const { currentUser, ...rest } = state;
+                const { currentUser, undoStack, redoStack, canUndo, canRedo, ...rest } = state;
                 return rest;
             },
             onRehydrateStorage: () => (state) => {
@@ -686,3 +809,61 @@ if (typeof window !== 'undefined' && socket!) {
         useTaskStore.getState().applyPatch(data);
     });
 }
+
+// --- High-Performance Granular Selectors ---
+
+/**
+ * Select a single task by ID. Only re-renders if this specific task changes.
+ */
+export const useTask = (id: string | null | undefined) => {
+    return useTaskStore((state) => (id ? state.tasks[id] : undefined));
+};
+
+/**
+ * Select an array of children IDs for a parent. Only re-renders when children are added/removed.
+ */
+export const useTaskChildIds = (parentId: string) => {
+    return useTaskStore(
+        useShallow((state) => state.tasks[parentId]?.children || [])
+    );
+};
+
+/**
+ * Select subtask progress count for a task.
+ */
+export const useTaskProgress = (id: string) => {
+    return useTaskStore(
+        useShallow((state) => {
+            const task = state.tasks[id];
+            if (!task || !task.children || task.children.length === 0) {
+                return null;
+            }
+            const total = task.children.length;
+            const completed = task.children.filter((cid) => state.tasks[cid]?.completed).length;
+            return {
+                total,
+                completed,
+                formatted: `${completed}/${total}`,
+                percentage: Math.round((completed / total) * 100)
+            };
+        })
+    );
+};
+
+/**
+ * Select all unique creators efficiently.
+ */
+export const useUniqueCreators = () => {
+    return useTaskStore(
+        useShallow((state) => {
+            const set = new Set<string>();
+            Object.values(state.tasks).forEach((t) => {
+                const creator = t.createdBy || 'local';
+                if (creator !== 'system') set.add(creator);
+            });
+            if (state.currentUser) set.add(state.currentUser);
+            return Array.from(set).sort();
+        })
+    );
+};
+

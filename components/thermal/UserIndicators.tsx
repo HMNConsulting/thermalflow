@@ -1,39 +1,24 @@
 'use client';
 
-import { useTaskStore } from '@/lib/store';
-import { useShallow } from 'zustand/react/shallow';
+import { useTaskStore, useUniqueCreators } from '@/lib/store';
 import { getUserColor, getUserInitial } from '@/lib/users';
 import { cn } from '@/lib/utils';
-import { useMemo } from 'react';
 
 export function UserIndicators() {
-    const tasks = useTaskStore(state => state.tasks);
+    const creators = useUniqueCreators();
     const currentUser = useTaskStore(state => state.currentUser);
     const activeFilters = useTaskStore(state => state.activeFilters);
     const setCreatorFilter = useTaskStore(state => state.setCreatorFilter);
 
-    // Get unique creators from all existing tasks
-    const creators = useMemo(() => {
-        const unique = new Set<string>();
-        Object.values(tasks).forEach(task => {
-            const creator = task.createdBy || 'local';
-            if (creator !== 'system') {
-                unique.add(creator);
-            }
-        });
-        // Ensure current user is in the list even if no tasks yet
-        if (currentUser) unique.add(currentUser);
-        return Array.from(unique).sort();
-    }, [tasks, currentUser]);
-
     return (
         <div className="flex items-center gap-3">
             <div className="flex -space-x-1.5 p-1">
-                {creators.map((email) => {
+                {creators.map((email: string) => {
                     const color = getUserColor(email);
                     const isMe = email === currentUser;
                     const isFiltered = activeFilters.creator === email;
                     const isOtherFiltered = activeFilters.creator !== null && activeFilters.creator !== email;
+
 
                     return (
                         <div

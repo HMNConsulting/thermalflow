@@ -117,23 +117,72 @@ function runGC(state) {
     return newState;
 }
 
-function saveData(data) {
+// Asynchronous, serialized debounced saver to prevent event-loop blocking
+let isSaving = false;
+let pendingSaveData = null;
+let saveDebounceTimer = null;
+
+async function performSave(data) {
+    if (isSaving) {
+        pendingSaveData = data;
+        return;
+    }
+    isSaving = true;
     try {
-        const tempFile = `${DATA_FILE}.tmp`;
-        fs.writeFileSync(tempFile, JSON.stringify(data, null, 2));
-        fs.renameSync(tempFile, DATA_FILE);
+        const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.tmp`;
+        const content = JSON.stringify(data, null, 2);
+        await fs.promises.writeFile(tempFile, content, 'utf8');
+        await fs.promises.rename(tempFile, DATA_FILE);
     } catch (e) {
-        console.error("Failed to save data:", e);
-        // Clean up temp file if it exists
-        try {
-            const tempFile = `${DATA_FILE}.tmp`;
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-        } catch (unlinkErr) { }
+        console.error("Failed to save data asynchronously:", e);
+    } finally {
+        isSaving = false;
+        if (pendingSaveData) {
+            const nextData = pendingSaveData;
+            pendingSaveData = null;
+            performSave(nextData);
+        }
     }
 }
 
+function saveData(data, immediate = false) {
+    if (immediate) {
+        if (saveDebounceTimer) {
+            clearTimeout(saveDebounceTimer);
+            saveDebounceTimer = null;
+        }
+        performSave(data);
+        return;
+    }
+    pendingSaveData = data;
+    if (saveDebounceTimer) return;
+    saveDebounceTimer = setTimeout(() => {
+        saveDebounceTimer = null;
+        if (pendingSaveData) {
+            const dataToSave = pendingSaveData;
+            pendingSaveData = null;
+            performSave(dataToSave);
+        }
+    }, 60);
+}
+
+// Ensure pending data is flushed synchronously on process exit
+function flushSync() {
+    if (pendingSaveData) {
+        try {
+            const tempFile = `${DATA_FILE}.exit.tmp`;
+            fs.writeFileSync(tempFile, JSON.stringify(pendingSaveData, null, 2));
+            fs.renameSync(tempFile, DATA_FILE);
+        } catch (e) { }
+    }
+}
+process.on('SIGINT', () => { flushSync(); process.exit(0); });
+process.on('SIGTERM', () => { flushSync(); process.exit(0); });
+process.on('beforeExit', () => { flushSync(); });
+
 // Initialize "Master" State
 let masterState = runGC(loadData());
+
 
 // --- Recurrence Scheduler ---
 // Check every minute
@@ -145,43 +194,24 @@ cron.schedule('* * * * *', () => {
     const updates = {};
 
     Object.values(tasks).forEach(task => {
-        if (!task.recurrence) return;
+        if (!task.recurrence || typeof task.recurrence.nextRun !== 'number' || isNaN(task.recurrence.nextRun)) {
+            return;
+        }
 
-        // Safety check: if nextRun is significantly in the past (e.g. server was off), 
-        // we might not want to run it immediately or we might want to catch up. 
-        // For now, let's just check if it's due.
+        // Check if recurrence is due
         if (now >= task.recurrence.nextRun) {
             console.log(`Executing recurrence for task: ${task.title}`);
 
-            // Calculate NEXT run time based on cron
-            // We use 'cron-parser' behavior via a helper or simple add for now?
-            // node-cron doesn't expose "next date" easily without a parser.
-            // For MVP, if frequency is 'daily', add 24h. 'weekly', add 7d.
-            // If 'custom' (cron string), we need a parser. 
-            // LIMITATION: 'node-cron' handles scheduling, not parsing for next date math manually easily.
-            // Workaround: We will rely on simple offsets for daily/weekly for now, 
-            // or we might need 'cron-parser' package for robust calc.
-
-            // Let's stick to simple logic for MVP to avoid extra heaviest deps if possible,
-            // or just use 24h/7d logic.
-            let nextRun = task.recurrence.nextRun;
             const DAY = 24 * 60 * 60 * 1000;
+            const step = task.recurrence.frequency === 'weekly' ? DAY * 7 : DAY;
+            let nextRun = task.recurrence.nextRun + step;
 
-            if (task.recurrence.frequency === 'daily') {
-                nextRun += DAY;
-            } else if (task.recurrence.frequency === 'weekly') {
-                nextRun += DAY * 7;
-            } else {
-                // Fallback for custom/other: just add 24h for now to prevent infinite loop
-                nextRun += DAY;
+            // Ensure nextRun is strictly in the future
+            if (nextRun <= now) {
+                const leapSteps = Math.floor((now - nextRun) / step) + 1;
+                nextRun += leapSteps * step;
             }
 
-            // Ensure nextRun is in future (in case server was off for a week)
-            while (nextRun <= now) {
-                if (task.recurrence.frequency === 'daily') nextRun += DAY;
-                else if (task.recurrence.frequency === 'weekly') nextRun += DAY * 7;
-                else nextRun += DAY;
-            }
 
             // Perform Action
             if (task.recurrence.action === 'reset') {
@@ -342,6 +372,7 @@ cron.schedule('* * * * *', () => {
 
 app.prepare().then(() => {
     const expressApp = express();
+    expressApp.set('trust proxy', 1);
     const server = createServer(expressApp);
     const io = new Server(server, {
         cors: {
@@ -558,9 +589,69 @@ app.prepare().then(() => {
         }
     });
 
-    // Printing is now handled by standalone print-server.js on port 3001 proxyed via /api/* above
+    // --- Scan-to-Done QR Toggle Endpoint ---
+    expressApp.get('/api/tasks/toggle-qr', (req, res) => {
+        const { id } = req.query;
+        if (!id || typeof id !== 'string' || !masterState.tasks[id]) {
+            return res.status(404).send(`
+                <!DOCTYPE html>
+                <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+                <title>ThermalFlow - Task Not Found</title>
+                <style>
+                    body { background: #09090b; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center; }
+                    .card { border: 1px solid #27272a; padding: 32px 24px; border-radius: 16px; background: #18181b; max-width: 380px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.6); }
+                    h2 { margin: 0 0 8px 0; font-size: 20px; color: #ef4444; }
+                    p { color: #a1a1aa; margin: 0; font-size: 14px; }
+                </style></head>
+                <body><div class="card"><h2>Task Not Found</h2><p>This task may have been deleted or does not exist.</p></div></body></html>
+            `);
+        }
+
+        const task = masterState.tasks[id];
+        const newCompleted = !task.completed;
+        const now = Date.now();
+        task.completed = newCompleted;
+        task.completedAt = newCompleted ? now : undefined;
+
+        masterState.version++;
+        masterState.lastModified = now;
+        saveData(masterState);
+
+        if (global.io) {
+            global.io.emit('sync:patch', {
+                tasks: { [id]: task },
+                version: masterState.version,
+                lastModified: masterState.lastModified
+            });
+        }
+
+        res.send(`
+            <!DOCTYPE html>
+            <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>ThermalFlow - Scan-to-Done</title>
+            <style>
+                body { background: #09090b; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center; }
+                .card { border: 1px solid #27272a; padding: 36px 24px; border-radius: 20px; background: #18181b; max-width: 400px; width: 100%; box-shadow: 0 25px 50px rgba(0,0,0,0.7); }
+                .icon { font-size: 48px; margin-bottom: 16px; }
+                .app-name { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #71717a; margin-bottom: 8px; font-weight: 700; }
+                h1 { margin: 0 0 16px 0; font-size: 22px; word-break: break-word; line-height: 1.3; }
+                .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; border-radius: 9999px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; ${newCompleted ? 'background: #052e16; color: #4ade80; border: 1px solid #166534;' : 'background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46;'} }
+                .hint { margin-top: 24px; font-size: 12px; color: #71717a; }
+            </style></head>
+            <body>
+                <div class="card">
+                    <div class="icon">${newCompleted ? '✅' : '↩️'}</div>
+                    <div class="app-name">ThermalFlow Slip Verified</div>
+                    <h1>${task.title.replace(/</g, '&lt;')}</h1>
+                    <div class="status-badge">${newCompleted ? '● Marked Completed' : '● Reopened'}</div>
+                    <div class="hint">Your digital board has been updated in real-time.</div>
+                </div>
+            </body></html>
+        `);
+    });
 
     // --- Task Capture Endpoint (adds task to web UI + prints) ---
+
     expressApp.post('/api/tasks/capture', async (req, res) => {
         const { title, parentId = 'root', print = true } = req.body;
 

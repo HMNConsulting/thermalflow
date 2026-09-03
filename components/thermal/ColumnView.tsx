@@ -9,18 +9,24 @@ import { cn } from '@/lib/utils';
 
 import { HotkeysModal } from './HotkeysModal';
 import { CompletedColumn } from './CompletedColumn';
+import { CommandPalette } from './CommandPalette';
 import GridView from './GridView';
 import GlobalTaskInput from './GlobalTaskInput';
+
 
 export function ColumnView() {
     const path = useTaskStore(state => state.path);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const [isHotkeysOpen, setIsHotkeysOpen] = useState(false);
+    const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
     const showCompleted = useTaskStore(state => state.showCompleted);
     const setShowCompleted = useTaskStore(state => state.setShowCompleted);
     const toggleCompletedColumn = useTaskStore(state => state.toggleCompletedColumn);
     const viewMode = useTaskStore(state => state.viewMode);
+    const undo = useTaskStore(state => state.undo);
+    const redo = useTaskStore(state => state.redo);
+
 
     // Mobile default: hide completed column
     useLayoutEffect(() => {
@@ -64,6 +70,30 @@ export function ColumnView() {
             const target = e.target as HTMLElement;
             const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
 
+            // Global Command Palette Toggle: Ctrl+K or Cmd+K
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                setIsCommandPaletteOpen(prev => !prev);
+                return;
+            }
+
+            // Global Undo / Redo: Ctrl+Z / Ctrl+Y
+            if ((e.ctrlKey || e.metaKey) && !isInput) {
+                if (e.key.toLowerCase() === 'z') {
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        redo();
+                    } else {
+                        undo();
+                    }
+                    return;
+                } else if (e.key.toLowerCase() === 'y') {
+                    e.preventDefault();
+                    redo();
+                    return;
+                }
+            }
+
             // Special handling for Help Toggle (Global)
             if (e.key === '/' || e.key === '?') {
                 if (!isInput || isHotkeysOpen) {
@@ -72,6 +102,7 @@ export function ColumnView() {
                     return;
                 }
             }
+
 
             // [ etc hotkeys ...]
 
@@ -253,8 +284,10 @@ export function ColumnView() {
             </AnimatePresence>
 
             <HotkeysModal open={isHotkeysOpen} onOpenChange={setIsHotkeysOpen} />
+            <CommandPalette open={isCommandPaletteOpen} onOpenChange={setIsCommandPaletteOpen} />
         </div>
     );
 }
+
 
 // Helper for cn is now imported from @/lib/utils
