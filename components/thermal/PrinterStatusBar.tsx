@@ -2,9 +2,14 @@
 
 import { useState, useEffect } from 'react';
 import { useTaskStore } from '@/lib/store';
-import { Printer, CheckCircle2, AlertTriangle, RefreshCw, QrCode, Volume2, VolumeX, Sparkles, ChevronDown, KeyRound, Eye, EyeOff, Check, Trash2, Copy, Terminal } from 'lucide-react';
+import { Printer, CheckCircle2, AlertTriangle, RefreshCw, QrCode, Volume2, VolumeX, Sparkles, ChevronDown, KeyRound, Eye, EyeOff, Check, Trash2, Copy, Terminal, Download } from 'lucide-react';
 import { getPrintServerUrl, cn } from '@/lib/utils';
 import { toast } from 'sonner';
+
+interface BeforeInstallPromptEvent extends Event {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
 
 interface PrinterStatus {
     connected: boolean;
@@ -31,6 +36,7 @@ export function PrinterStatusBar() {
     const [apiKeyInput, setApiKeyInput] = useState('');
     const [showKey, setShowKey] = useState(false);
     const [savingKey, setSavingKey] = useState(false);
+    const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
 
     const autoPrintEnabled = useTaskStore((state) => state.autoPrintEnabled);
     const toggleAutoPrint = useTaskStore((state) => state.toggleAutoPrint);
@@ -76,7 +82,24 @@ export function PrinterStatusBar() {
         fetchStatus();
         fetchGeminiConfig();
         const interval = setInterval(fetchStatus, 8000);
-        return () => clearInterval(interval);
+
+        const handleBeforeInstallPrompt = (e: Event) => {
+            e.preventDefault();
+            setDeferredPrompt(e as BeforeInstallPromptEvent);
+        };
+        const handleAppInstalled = () => {
+            setDeferredPrompt(null);
+            toast.success('ThermalFlow installed as an app!');
+        };
+
+        window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+        window.addEventListener('appinstalled', handleAppInstalled);
+
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+            window.removeEventListener('appinstalled', handleAppInstalled);
+        };
     }, []);
 
     const handleSaveGeminiKey = async () => {
@@ -363,6 +386,24 @@ export function PrinterStatusBar() {
                                 https://print.nebulous.space/mcp
                             </div>
                         </div>
+
+                        {/* Install PWA Button (if installable) */}
+                        {deferredPrompt && (
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    await deferredPrompt.prompt();
+                                    const choice = await deferredPrompt.userChoice;
+                                    if (choice.outcome === 'accepted') {
+                                        setDeferredPrompt(null);
+                                    }
+                                }}
+                                className="w-full mb-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                            >
+                                <Download size={13} />
+                                INSTALL APP (PWA)
+                            </button>
+                        )}
 
                         {/* Test Print Button */}
                         <button

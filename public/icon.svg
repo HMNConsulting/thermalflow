@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#09090b"/>
+  <!-- Thermal Receipt Chit -->
+  <path d="M136 96 L156 112 L176 96 L196 112 L216 96 L236 112 L256 96 L276 112 L296 96 L316 112 L336 96 L356 112 L376 96 L376 416 L356 400 L336 416 L316 400 L296 416 L276 400 L256 416 L236 400 L216 416 L196 400 L176 416 L156 400 L136 416 Z" fill="#faf8f5"/>
+  <!-- Header Bar -->
+  <rect x="168" y="148" width="176" height="20" rx="6" fill="#09090b"/>
+  <!-- Dashed Divider -->
+  <line x1="168" y1="190" x2="344" y2="190" stroke="#71717a" stroke-width="6" stroke-dasharray="12 10" stroke-linecap="round"/>
+  <!-- Checkboxes & Lines -->
+  <rect x="168" y="218" width="24" height="24" rx="5" fill="#10b981"/>
+  <path d="M174 230 L179 235 L187 224" stroke="#ffffff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="208" y="223" width="128" height="14" rx="5" fill="#71717a"/>
+
+  <rect x="168" y="266" width="24" height="24" rx="5" stroke="#09090b" stroke-width="5" fill="none"/>
+  <rect x="208" y="271" width="136" height="14" rx="5" fill="#09090b"/>
+
+  <rect x="168" y="314" width="24" height="24" rx="5" stroke="#09090b" stroke-width="5" fill="none"/>
+  <rect x="208" y="319" width="96" height="14" rx="5" fill="#09090b"/>
+
+  <!-- Amber Sparkle Dot -->
+  <circle cx="332" cy="326" r="10" fill="#f59e0b"/>
+</svg>
