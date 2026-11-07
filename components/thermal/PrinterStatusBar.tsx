@@ -155,18 +155,21 @@ export function PrinterStatusBar() {
         <div className="relative">
             {/* Status Pill */}
             <button
+                type="button"
+                aria-expanded={isOpen}
+                aria-haspopup="dialog"
                 onClick={() => setIsOpen(!isOpen)}
                 className={cn(
-                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono border transition-all hover:opacity-90",
+                    "flex items-center gap-1.5 px-3 py-1.5 sm:px-2.5 sm:py-1 rounded-full text-[11px] font-mono border transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100",
                     isOnline
-                        ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400"
-                        : "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400"
+                        ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300"
+                        : "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300"
                 )}
                 title="Thermal Printer Status (Click for settings)"
             >
                 <span className={cn(
                     "w-2 h-2 rounded-full",
-                    isOnline ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+                    isOnline ? "bg-emerald-500 motion-safe:animate-pulse" : "bg-amber-500"
                 )} />
                 <span className="hidden sm:inline font-bold">
                     {isOnline ? 'PRINTER READY' : 'SIMULATION'}
@@ -183,15 +186,21 @@ export function PrinterStatusBar() {
             {isOpen && (
                 <>
                     <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-                    <div className="absolute right-0 top-full mt-2 w-72 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl rounded-xl p-3 z-50 font-mono text-xs text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
+                    <div
+                        role="dialog"
+                        aria-label="Hardware and Chits Settings"
+                        className="fixed left-4 right-4 top-16 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-72 bg-card border border-zinc-200 dark:border-zinc-800 shadow-2xl rounded-xl p-3 z-50 font-mono text-xs text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150"
+                    >
                         <div className="flex items-center justify-between pb-2 border-b border-zinc-100 dark:border-zinc-800 mb-3">
                             <div className="flex items-center gap-2">
                                 <Printer size={15} />
                                 <span className="font-bold uppercase tracking-wider text-[11px]">Hardware & Chits</span>
                             </div>
                             <button
+                                type="button"
+                                aria-label="Refresh printer status"
                                 onClick={fetchStatus}
-                                className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1"
+                                className="text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 p-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
                                 title="Refresh status"
                             >
                                 <RefreshCw size={12} />
@@ -201,51 +210,60 @@ export function PrinterStatusBar() {
                         {/* Status Summary */}
                         <div className="bg-zinc-50 dark:bg-zinc-950 p-2.5 rounded-lg mb-3 border border-zinc-200 dark:border-zinc-800 text-[11px] space-y-1">
                             <div className="flex justify-between">
-                                <span className="text-zinc-400">Status:</span>
-                                <span className={cn("font-bold", isOnline ? "text-emerald-500" : "text-amber-500")}>
+                                <span className="text-zinc-500 dark:text-zinc-400">Status:</span>
+                                <span className={cn("font-bold", isOnline ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
                                     {isOnline ? 'Online (ESC/POS USB)' : 'Simulated Audio'}
                                 </span>
                             </div>
                             <div className="flex justify-between">
-                                <span className="text-zinc-400">Queue:</span>
+                                <span className="text-zinc-500 dark:text-zinc-400">Queue:</span>
                                 <span>{queueLength} pending</span>
                             </div>
                         </div>
 
                         {/* Toggles */}
-                        <div className="space-y-2 mb-3">
+                        <div className="space-y-1.5 mb-3">
                             <button
+                                type="button"
+                                role="switch"
+                                aria-checked={autoPrintEnabled}
                                 onClick={toggleAutoPrint}
-                                className="w-full flex items-center justify-between p-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-left"
+                                className="w-full flex items-center justify-between p-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
                             >
                                 <span className="text-[11px]">Auto-Print on Task Add</span>
-                                <span className={cn("font-bold text-[10px] px-1.5 py-0.5 rounded", autoPrintEnabled ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-400")}>
+                                <span className={cn("font-bold text-[10px] px-1.5 py-0.5 rounded", autoPrintEnabled ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400")}>
                                     {autoPrintEnabled ? 'ON' : 'OFF'}
                                 </span>
                             </button>
 
                             <button
+                                type="button"
+                                role="switch"
+                                aria-checked={qrOnChits}
                                 onClick={toggleQrOnChits}
-                                className="w-full flex items-center justify-between p-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-left"
+                                className="w-full flex items-center justify-between p-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
                             >
                                 <div className="flex items-center gap-1.5">
-                                    <QrCode size={13} className="text-zinc-400" />
+                                    <QrCode size={13} className="text-zinc-500 dark:text-zinc-400" />
                                     <span className="text-[11px]">Scan-to-Done QR</span>
                                 </div>
-                                <span className={cn("font-bold text-[10px] px-1.5 py-0.5 rounded", qrOnChits ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-400")}>
+                                <span className={cn("font-bold text-[10px] px-1.5 py-0.5 rounded", qrOnChits ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400")}>
                                     {qrOnChits ? 'ON' : 'OFF'}
                                 </span>
                             </button>
 
                             <button
+                                type="button"
+                                role="switch"
+                                aria-checked={soundEnabled}
                                 onClick={toggleSound}
-                                className="w-full flex items-center justify-between p-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-left"
+                                className="w-full flex items-center justify-between p-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
                             >
                                 <div className="flex items-center gap-1.5">
-                                    {soundEnabled ? <Volume2 size={13} className="text-zinc-400" /> : <VolumeX size={13} className="text-zinc-400" />}
+                                    {soundEnabled ? <Volume2 size={13} className="text-zinc-500 dark:text-zinc-400" /> : <VolumeX size={13} className="text-zinc-500 dark:text-zinc-400" />}
                                     <span className="text-[11px]">Audio Simulation</span>
                                 </div>
-                                <span className={cn("font-bold text-[10px] px-1.5 py-0.5 rounded", soundEnabled ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-400")}>
+                                <span className={cn("font-bold text-[10px] px-1.5 py-0.5 rounded", soundEnabled ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400" : "bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400")}>
                                     {soundEnabled ? 'ON' : 'MUTED'}
                                 </span>
                             </button>
@@ -254,16 +272,16 @@ export function PrinterStatusBar() {
                         {/* Gemini AI Configuration */}
                         <div className="pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800 mb-3">
                             <div className="flex items-center justify-between mb-1.5 px-1">
-                                <div className="flex items-center gap-1.5">
+                                <label htmlFor="gemini-api-key-input" className="flex items-center gap-1.5 cursor-pointer">
                                     <Sparkles size={12} className="text-amber-500" />
-                                    <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-500 dark:text-zinc-400">Gemini API Key</span>
-                                </div>
+                                    <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-600 dark:text-zinc-400">Gemini API Key</span>
+                                </label>
                                 {geminiConfig?.configured ? (
-                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
                                         {geminiConfig.source === 'env' ? 'ENV ACTIVE' : geminiConfig.masked}
                                     </span>
                                 ) : (
-                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-400">
+                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400">
                                         NOT SET
                                     </span>
                                 )}
@@ -271,6 +289,7 @@ export function PrinterStatusBar() {
                             <div className="flex items-center gap-1.5">
                                 <div className="relative flex-1">
                                     <input
+                                        id="gemini-api-key-input"
                                         type={showKey ? 'text' : 'password'}
                                         value={apiKeyInput}
                                         onChange={(e) => setApiKeyInput(e.target.value)}
@@ -281,12 +300,13 @@ export function PrinterStatusBar() {
                                             }
                                         }}
                                         placeholder={geminiConfig?.configured ? 'Replace API key...' : 'Paste AIza... key'}
-                                        className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg pl-2.5 pr-7 py-1.5 text-[11px] font-mono text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-amber-500/60"
+                                        className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg pl-2.5 pr-7 py-1.5 text-[11px] font-mono text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500/60"
                                     />
                                     <button
                                         type="button"
+                                        aria-label={showKey ? 'Hide API key' : 'Show API key'}
                                         onClick={() => setShowKey(!showKey)}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
                                         title={showKey ? 'Hide key' : 'Show key'}
                                     >
                                         {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
@@ -306,9 +326,10 @@ export function PrinterStatusBar() {
                                 ) : geminiConfig?.source === 'ui' ? (
                                     <button
                                         type="button"
+                                        aria-label="Clear saved Gemini API key"
                                         onClick={handleClearGeminiKey}
                                         disabled={savingKey}
-                                        className="p-1.5 text-zinc-400 hover:text-red-500 border border-zinc-200 dark:border-zinc-800 hover:border-red-500/30 rounded-lg transition-colors shrink-0"
+                                        className="p-1.5 text-zinc-500 hover:text-red-500 border border-zinc-200 dark:border-zinc-800 hover:border-red-500/30 rounded-lg transition-colors shrink-0"
                                         title="Clear saved API key"
                                     >
                                         <Trash2 size={12} />
@@ -319,9 +340,10 @@ export function PrinterStatusBar() {
 
                         {/* Test Print Button */}
                         <button
+                            type="button"
                             onClick={handleTestPrint}
                             disabled={isTesting}
-                            className="w-full py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:opacity-90 active:scale-98 transition-all"
+                            className="w-full py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:opacity-90 active:scale-98 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
                         >
                             <Printer size={13} />
                             {isTesting ? 'PRINTING TEST...' : 'PRINT TEST CHIT'}

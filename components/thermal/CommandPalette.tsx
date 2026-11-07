@@ -176,24 +176,29 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
                 {/* Search Bar */}
                 <div className="flex items-center gap-3 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
-                    <Search size={18} className="text-zinc-400 shrink-0" />
+                    <Search size={18} className="text-zinc-500 dark:text-zinc-400 shrink-0" />
                     <input
                         ref={inputRef}
+                        role="combobox"
+                        aria-expanded={true}
+                        aria-controls="command-palette-list"
+                        aria-autocomplete="list"
+                        aria-label="Search tasks, run commands, or toggle printer settings"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="Search tasks, run commands, or toggle printer settings..."
-                        className="flex-1 bg-transparent border-none outline-none text-sm font-mono placeholder:text-zinc-400 dark:placeholder:text-zinc-600 text-zinc-900 dark:text-zinc-100"
+                        className="flex-1 bg-transparent border-none outline-none text-sm font-mono placeholder:text-zinc-500 dark:placeholder:text-zinc-500 text-zinc-900 dark:text-zinc-100"
                     />
-                    <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded text-zinc-500">
+                    <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded text-zinc-600 dark:text-zinc-400">
                         ESC
                     </kbd>
                 </div>
 
                 {/* Results List */}
-                <div className="max-h-[340px] overflow-y-auto p-2 space-y-1">
+                <div id="command-palette-list" role="listbox" aria-label="Search Results" className="max-h-[340px] overflow-y-auto p-2 space-y-1">
                     {taskResults.length > 0 && (
-                        <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                        <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
                             Tasks ({taskResults.length})
                         </div>
                     )}
@@ -201,38 +206,43 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                     {taskResults.map((item, idx) => {
                         const isSelected = selectedIndex === idx;
                         return (
-                            <div
+                            <button
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
                                 key={item.task.id}
                                 onClick={() => handleSelect(idx)}
                                 onMouseEnter={() => setSelectedIndex(idx)}
                                 className={cn(
-                                    "flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors",
+                                    "w-full text-left flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors focus-visible:outline-none",
                                     isSelected ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-800 dark:text-zinc-200"
                                 )}
                             >
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
                                     <input
                                         type="checkbox"
+                                        aria-label={item.task.title}
+                                        tabIndex={-1}
                                         checked={item.task.completed}
                                         readOnly
-                                        className="rounded border-zinc-400"
+                                        className="rounded border-zinc-400 pointer-events-none"
                                     />
                                     <span className={cn("truncate font-medium", item.task.completed && "line-through opacity-50")}>
                                         {item.task.title}
                                     </span>
                                     {item.breadcrumb && (
-                                        <span className={cn("text-[10px] truncate opacity-50 ml-1", isSelected ? "text-zinc-300 dark:text-zinc-600" : "text-zinc-400")}>
+                                        <span className={cn("text-[10px] truncate opacity-70 ml-1", isSelected ? "text-zinc-300 dark:text-zinc-600" : "text-zinc-500 dark:text-zinc-400")}>
                                             in {item.breadcrumb}
                                         </span>
                                     )}
                                 </div>
                                 <CornerDownLeft size={12} className={cn("shrink-0 ml-2 opacity-50", isSelected ? "opacity-100" : "hidden")} />
-                            </div>
+                            </button>
                         );
                     })}
 
                     {actionResults.length > 0 && (
-                        <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                        <div className="px-2 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
                             Commands & Preferences
                         </div>
                     )}
@@ -241,12 +251,15 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                         const overallIdx = taskResults.length + actionIdx;
                         const isSelected = selectedIndex === overallIdx;
                         return (
-                            <div
+                            <button
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
                                 key={action.id}
                                 onClick={() => handleSelect(overallIdx)}
                                 onMouseEnter={() => setSelectedIndex(overallIdx)}
                                 className={cn(
-                                    "flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors",
+                                    "w-full text-left flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors focus-visible:outline-none",
                                     isSelected ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-800 dark:text-zinc-200"
                                 )}
                             >
@@ -255,19 +268,19 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                                     <span className="font-medium">{action.title}</span>
                                 </div>
                                 <ArrowRight size={12} className={cn("opacity-50", isSelected ? "opacity-100" : "hidden")} />
-                            </div>
+                            </button>
                         );
                     })}
 
                     {allItems.length === 0 && (
-                        <div className="py-8 text-center text-xs text-zinc-400 opacity-60">
+                        <div className="py-8 text-center text-xs text-zinc-500 dark:text-zinc-400">
                             No matching tasks or commands found
                         </div>
                     )}
                 </div>
 
                 {/* Footer hints */}
-                <div className="px-4 py-2 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-[10px] text-zinc-400">
+                <div className="px-4 py-2 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-[10px] text-zinc-500 dark:text-zinc-400">
                     <div className="flex items-center gap-3">
                         <span><kbd className="font-bold">↑↓</kbd> Navigate</span>
                         <span><kbd className="font-bold">↵</kbd> Select</span>

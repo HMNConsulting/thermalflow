@@ -3,7 +3,7 @@
 import { Dialog, DialogContent, DialogTrigger, DialogTitle, DialogClose } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Printer, Loader2, X } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useTaskStore } from '@/lib/store';
 import { getPrintServerUrl } from '@/lib/utils';
@@ -11,7 +11,6 @@ import { getPrintServerUrl } from '@/lib/utils';
 export function ReceiptModal() {
     const [open, setOpen] = useState(false);
     const [printing, setPrinting] = useState(false);
-    const tasks = useTaskStore(state => state.tasks);
     const activeFilters = useTaskStore(state => state.activeFilters);
 
     const soundEnabled = useTaskStore(state => state.soundEnabled);
@@ -19,8 +18,12 @@ export function ReceiptModal() {
     const [scope, setScope] = useState<'all' | 'today' | 'subtree'>('all');
     const [template, setTemplate] = useState<'default' | 'minimal' | 'receipt'>('default');
 
+    // Only subscribe to tasks when the modal is open to avoid re-rendering on every task edit
+    const tasks = useTaskStore(state => open ? state.tasks : null);
+
     // Flatten tasks for receipt based on chosen scope
-    const getFlattenedTasks = () => {
+    const taskList = useMemo(() => {
+        if (!open || !tasks) return [];
         const result: { title: string, level: number, completed: boolean }[] = [];
         const todayStr = new Date().toDateString();
 
@@ -46,9 +49,7 @@ export function ReceiptModal() {
         const startId = scope === 'subtree' && selectedTaskId && tasks[selectedTaskId] ? selectedTaskId : 'root';
         traverse(startId, 0);
         return result;
-    };
-
-    const taskList = getFlattenedTasks();
+    }, [open, tasks, activeFilters.creator, scope, selectedTaskId]);
 
     const handlePrint = async () => {
         setPrinting(true);
@@ -149,6 +150,10 @@ export function ReceiptModal() {
             osc.start();
             osc.stop(ctx.currentTime + 1.5);
 
+            setTimeout(() => {
+                ctx.close().catch(() => {});
+            }, 1700);
+
         } catch (e) { console.error("Audio error", e) }
 
         toast("Simulating Print... [Success]", {
@@ -171,28 +176,32 @@ export function ReceiptModal() {
 
                 {/* Scope & Template Controls */}
                 <div className="bg-zinc-900/95 text-white p-3 rounded-t-xl mb-1 flex flex-col gap-2 shadow-xl border border-zinc-700/50 backdrop-blur-md">
-                    <div className="flex items-center justify-between text-[11px]">
+                    <div className="flex items-center justify-between text-[11px]" role="group" aria-label="Receipt Scope">
                         <span className="text-zinc-400 font-bold uppercase tracking-wider">Scope:</span>
                         <div className="flex gap-1">
                             {(['all', 'today', 'subtree'] as const).map(s => (
                                 <button
                                     key={s}
+                                    type="button"
+                                    aria-pressed={scope === s}
                                     onClick={() => setScope(s)}
-                                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all ${scope === s ? 'bg-white text-zinc-900 shadow' : 'text-zinc-400 hover:text-white'}`}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${scope === s ? 'bg-white text-zinc-900 shadow' : 'text-zinc-400 hover:text-white'}`}
                                 >
                                     {s}
                                 </button>
                             ))}
                         </div>
                     </div>
-                    <div className="flex items-center justify-between text-[11px]">
+                    <div className="flex items-center justify-between text-[11px]" role="group" aria-label="Receipt Style">
                         <span className="text-zinc-400 font-bold uppercase tracking-wider">Style:</span>
                         <div className="flex gap-1">
                             {(['default', 'minimal', 'receipt'] as const).map(t => (
                                 <button
                                     key={t}
+                                    type="button"
+                                    aria-pressed={template === t}
                                     onClick={() => setTemplate(t)}
-                                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all ${template === t ? 'bg-white text-zinc-900 shadow' : 'text-zinc-400 hover:text-white'}`}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${template === t ? 'bg-white text-zinc-900 shadow' : 'text-zinc-400 hover:text-white'}`}
                                 >
                                     {t}
                                 </button>
@@ -202,7 +211,7 @@ export function ReceiptModal() {
                 </div>
 
                 <div className="bg-white p-6 relative w-full shadow-2xl filter drop-shadow-xl text-black font-mono text-xs max-h-[75vh] flex flex-col group">
-                    <DialogClose className="absolute top-4 right-4 opacity-70 hover:opacity-100 transition-opacity z-50">
+                    <DialogClose aria-label="Close receipt preview" className="absolute top-4 right-4 opacity-70 hover:opacity-100 transition-opacity z-50">
                         <X size={16} />
                     </DialogClose>
                     {/* Jagged top - Using SVG for cleaner edge */}

@@ -1,7 +1,6 @@
 'use client';
 import { useTaskStore, useTask, useUniqueCreators } from '@/lib/store';
-import { useState, useMemo, useRef, useEffect } from 'react';
-import { cn, getPrintServerUrl } from '@/lib/utils';
+import { useMemo, useRef, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { TaskItem } from './TaskItem';
 
@@ -15,15 +14,10 @@ interface TaskColumnProps {
 export function TaskColumn({ parentId, depth, activeTaskId, isActiveColumn }: TaskColumnProps) {
     const parentTask = useTask(parentId);
     const tasks = useTaskStore(state => state.tasks);
-    const addTask = useTaskStore(state => state.addTask);
     const selectTask = useTaskStore(state => state.selectTask);
     const selectedTaskId = useTaskStore(state => state.selectedTaskId);
     const activeFilters = useTaskStore(state => state.activeFilters);
-    const autoPrintEnabled = useTaskStore(state => state.autoPrintEnabled);
-    const qrOnChits = useTaskStore(state => state.qrOnChits);
     const allCreators = useUniqueCreators();
-
-    const [newTaskTitle, setNewTaskTitle] = useState('');
 
     // Derived state: visible tasks (uncompleted), grouped by date
     const groupedTasks = useMemo(() => {
@@ -65,7 +59,8 @@ export function TaskColumn({ parentId, depth, activeTaskId, isActiveColumn }: Ta
             confetti({
                 particleCount: 100,
                 spread: 70,
-                origin: { y: 0.6 }
+                origin: { y: 0.6 },
+                disableForReducedMotion: true
             });
         }
 
@@ -74,66 +69,38 @@ export function TaskColumn({ parentId, depth, activeTaskId, isActiveColumn }: Ta
 
     if (!parentTask) return null;
 
-    const printSingleTask = async (title: string, taskId?: string) => {
-        if (!autoPrintEnabled) return;
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1200);
-
-            const printServerUrl = getPrintServerUrl();
-            const host = typeof window !== 'undefined' ? window.location.origin : '';
-            const qrUrl = qrOnChits && taskId ? `${host}/api/tasks/toggle-qr?id=${taskId}` : undefined;
-
-            await fetch(`${printServerUrl}/print-single`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    taskName: title.toUpperCase(),
-                    taskId,
-                    qrUrl
-                }),
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-        } catch (e) {
-            console.log("Auto-print skipped or offline", e);
-        }
-    };
-
-    const handleAddTask = (e: React.FormEvent) => {
-        e.preventDefault();
-        const title = newTaskTitle.trim();
-        if (title) {
-            addTask(parentId, title);
-            setNewTaskTitle('');
-            printSingleTask(title);
-        }
-    };
+    const pendingCount = parentTask.children ? parentTask.children.filter(id => !tasks[id]?.completed).length : 0;
 
     return (
-        <div className="w-80 flex-shrink-0 flex flex-col h-full bg-zinc-50 dark:bg-zinc-950 border-r border-zinc-200 dark:border-zinc-800 min-h-0">
+        <section
+            aria-label={parentTask.id === 'root' ? 'Home Tasks' : `${parentTask.title} Subtasks`}
+            className="w-[calc(100vw-2rem)] sm:w-80 flex-shrink-0 flex flex-col h-full bg-background border-r border-zinc-200 dark:border-zinc-800 min-h-0"
+        >
             {/* Header */}
-            <div className="h-14 flex items-center justify-between px-4 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0 bg-zinc-50 dark:bg-zinc-950 z-20">
-                <span className="font-mono text-sm font-bold truncate">
+            <div className="h-14 flex items-center justify-between px-4 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0 bg-background z-20">
+                <h2 className="font-mono text-sm font-bold truncate">
                     {parentTask.id === 'root' ? 'Home' : parentTask.title}
-                </span>
-                {parentTask.children && parentTask.children.length > 0 && (
-                    <span className="text-[10px] font-mono text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
-                        {parentTask.children.filter(id => !tasks[id]?.completed).length} pending
+                </h2>
+                {pendingCount > 0 && (
+                    <span className="text-[10px] font-mono text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+                        {pendingCount} pending
                     </span>
                 )}
             </div>
 
-            {/* Scrollable List with optimized rendering */}
-            <div className="flex-1 overflow-y-auto p-2 scroll-smooth">
-                {Object.keys(groupedTasks).length === 0 && parentTask.children.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-zinc-400 gap-2 opacity-50">
-                        <span className="text-xs">No tasks</span>
+            {/* Scrollable List with bottom clearance for GlobalTaskInput */}
+            <div className="flex-1 overflow-y-auto p-2 pb-32 scroll-smooth">
+                {Object.keys(groupedTasks).length === 0 && pendingCount === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-500 dark:text-zinc-400 gap-2 px-6 text-center">
+                        <span className="text-xs font-bold uppercase tracking-wider">No Pending Tasks</span>
+                        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+                            Type anywhere to add a task, enter <code className="px-1 py-0.5 bg-zinc-100 dark:bg-zinc-900 rounded border border-zinc-200 dark:border-zinc-800">Job 1-5</code> for batch chits, or click <span className="text-amber-600 dark:text-amber-400 font-bold">✦</span> to break down a goal.
+                        </p>
                     </div>
                 ) : (
                     Object.entries(groupedTasks).reverse().map(([dateLabel, groupTasks]) => (
                         <div key={dateLabel} className="mb-4">
-                            <h3 className="px-2 mb-2 text-[10px] font-bold text-zinc-400 uppercase tracking-wider sticky top-0 bg-zinc-50 dark:bg-zinc-950 py-1 z-10">
+                            <h3 className="px-2 mb-2 text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider sticky top-0 bg-background py-1 z-10">
                                 {dateLabel}
                             </h3>
                             <div className="space-y-[2px]">
@@ -152,7 +119,7 @@ export function TaskColumn({ parentId, depth, activeTaskId, isActiveColumn }: Ta
                     ))
                 )}
             </div>
-        </div>
+        </section>
     );
 }
 

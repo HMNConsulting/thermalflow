@@ -34,10 +34,10 @@ export function DailyProgress() {
 
 
     return (
-        <div className="flex items-center gap-2 animate-in fade-in slide-in-from-top-1 duration-500">
-            <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest hidden md:inline-block">Today</span>
-            <div className="flex items-center gap-1.5 bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded-full border border-zinc-200 dark:border-zinc-800">
-                <span className="text-xs">⚡</span>
+        <div className="flex items-center gap-2 animate-in fade-in slide-in-from-top-1 duration-500" title={`${completedToday} tasks completed today`}>
+            <span className="text-[10px] font-mono text-zinc-500 dark:text-zinc-400 uppercase tracking-widest hidden md:inline-block">Today</span>
+            <div className="flex items-center gap-1.5 bg-zinc-100 dark:bg-zinc-900 px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-800">
+                <span className="text-xs" aria-hidden="true">⚡</span>
                 <span className="text-xs font-bold font-mono">{completedToday}</span>
             </div>
         </div>

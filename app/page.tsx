@@ -26,8 +26,8 @@ export default async function Home() {
         </div>
 
         {/* Center: Workspace Label */}
-        <div className="hidden md:block text-[10px] font-mono text-zinc-400 justify-self-center text-center uppercase tracking-widest opacity-40">
-          ThermalFlow // Press <kbd className="font-bold border border-zinc-300 dark:border-zinc-700 px-1 rounded bg-zinc-100 dark:bg-zinc-900">Ctrl+K</kbd>
+        <div className="hidden md:block text-[10px] font-mono text-zinc-500 dark:text-zinc-400 justify-self-center text-center uppercase tracking-widest">
+          ThermalFlow // Press <kbd className="font-bold border border-zinc-300 dark:border-zinc-700 px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300">Ctrl+K</kbd>
         </div>
 
         {/* Right Side: Actions */}

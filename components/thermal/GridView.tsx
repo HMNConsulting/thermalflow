@@ -22,8 +22,9 @@ export default function GridView() {
             onClick={() => selectTask(null)}
         >
             {topLevelIds.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-zinc-400 font-handwriting text-2xl opacity-40">
-                    No tasks yet. Add one below!
+                <div className="h-full flex flex-col items-center justify-center text-zinc-500 dark:text-zinc-400 gap-2">
+                    <span className="font-handwriting text-3xl">No sticky notes yet</span>
+                    <span className="text-xs font-mono uppercase tracking-wider">Type below to pin your first task</span>
                 </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-10 max-w-[2000px] mx-auto pb-32 items-start">

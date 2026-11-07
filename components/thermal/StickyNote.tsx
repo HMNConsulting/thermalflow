@@ -72,7 +72,7 @@ const StickyNote = memo(({ taskId, depth = 0 }: StickyNoteProps) => {
                 containIntrinsicSize: '0 100px'
             } as any}
             className={cn(
-                "group relative p-3.5 transition-all duration-200 rounded-xs cursor-pointer min-h-[100px] flex flex-col",
+                "group relative p-3.5 transition-[transform,box-shadow,background-color] duration-200 rounded-xs cursor-pointer min-h-[100px] flex flex-col",
                 "shadow-[2px_3px_8px_rgba(0,0,0,0.15)] hover:shadow-[4px_6px_12px_rgba(0,0,0,0.2)]",
                 colorClass,
                 isSelected ? "ring-2 ring-zinc-900 dark:ring-zinc-100 rotate-0 scale-[1.02] z-10 shadow-xl" : "rotate-[var(--rotation)]",
@@ -86,13 +86,14 @@ const StickyNote = memo(({ taskId, depth = 0 }: StickyNoteProps) => {
                 >
                     <Checkbox
                         checked={task.completed}
+                        aria-label={`Mark "${task.title}" as ${task.completed ? 'incomplete' : 'complete'}`}
                         onCheckedChange={() => toggleTask(taskId)}
-                        className="mt-1 border-black/20 data-[state=checked]:bg-black data-[state=checked]:text-white"
+                        className="mt-1 border-zinc-900/30 dark:border-zinc-100/30 data-[state=checked]:bg-zinc-900 dark:data-[state=checked]:bg-zinc-100 data-[state=checked]:text-white dark:data-[state=checked]:text-zinc-900"
                     />
                 </div>
                 <h3 className={cn(
-                    "font-handwriting text-lg leading-snug break-words mr-6",
-                    task.completed && "line-through opacity-50 text-black/40"
+                    "font-handwriting text-xl leading-snug break-words mr-6 text-zinc-900 dark:text-zinc-100",
+                    task.completed && "line-through opacity-60"
                 )}>
                     {task.title}
                 </h3>
@@ -110,12 +111,15 @@ const StickyNote = memo(({ taskId, depth = 0 }: StickyNoteProps) => {
             {/* Delete button (only on hover or selected) */}
             <RecurrenceModal taskId={taskId} isSelected={isSelected} />
             <button
+                type="button"
+                aria-label={`Delete "${task.title}"`}
+                title="Delete task"
                 onClick={(e) => {
                     e.stopPropagation();
                     deleteTask(taskId);
                 }}
                 className={cn(
-                    "absolute top-2 right-2 p-1 rounded hover:bg-black/5 text-black/20 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100",
+                    "absolute top-2 right-2 p-1.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-zinc-700/60 dark:text-zinc-300/60 hover:text-red-600 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500",
                     isSelected && "opacity-100"
                 )}
             >
@@ -123,14 +127,14 @@ const StickyNote = memo(({ taskId, depth = 0 }: StickyNoteProps) => {
             </button>
 
             {/* Visual Tape effect */}
-            <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-12 h-6 bg-white/20 backdrop-blur-sm rotate-2 pointer-events-none border border-white/10" />
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-12 h-6 bg-white/30 dark:bg-white/10 backdrop-blur-xs rotate-2 pointer-events-none border border-white/20 dark:border-white/5" />
 
             {/* Progress Bar (Only if has children) */}
             {allChildIds.length > 0 && (
-                <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-black/5">
+                <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-black/10 dark:bg-white/10 overflow-hidden">
                     <div
-                        className="h-full bg-black/40 transition-all duration-300"
-                        style={{ width: `${progress}%` }}
+                        className="h-full w-full bg-zinc-900/50 dark:bg-zinc-100/50 origin-left transition-transform duration-300"
+                        style={{ transform: `scaleX(${progress / 100})` }}
                     />
                 </div>
             )}

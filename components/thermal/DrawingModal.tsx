@@ -14,6 +14,8 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
     const [printing, setPrinting] = useState(false);
     const [redeploying, setRedeploying] = useState(false);
     const [showSystem, setShowSystem] = useState(false);
+    const [redeployKey, setRedeployKey] = useState('');
+    const [confirmRedeploy, setConfirmRedeploy] = useState(false);
 
     // 2D Array representing the 24x24 grid. false = empty, true = filled
     const [grid, setGrid] = useState<boolean[][]>(
@@ -126,11 +128,12 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
         }
     };
 
-    const handleRedeploy = async () => {
-        if (!confirm("Are you sure? This will REBUILD and RESTART the entire ThermalFlow server. The site will be offline for ~60 seconds.")) return;
-
-        const key = prompt("Enter redeploy authorization key:");
-        if (!key) return;
+    const handleRedeploy = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        if (!redeployKey.trim()) {
+            toast.error("Please enter the redeploy authorization key.");
+            return;
+        }
 
         setRedeploying(true);
         try {
@@ -138,21 +141,23 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'x-redeploy-key': key
+                    'x-redeploy-key': redeployKey.trim()
                 }
             });
 
             if (res.ok) {
-                toast.success("Redeploy triggered! This page will stop responding soon.");
+                toast.success("Redeploy triggered! This page will reload in 60s.");
+                setConfirmRedeploy(false);
+                setRedeployKey('');
                 setTimeout(() => {
                     window.location.reload();
-                }, 60000); // Reload after 60s
+                }, 60000);
             } else {
-                throw new Error("Failed to trigger redeploy");
+                throw new Error("Unauthorized or failed to trigger redeploy");
             }
         } catch (e) {
             console.error(e);
-            toast.error("Redeploy initiation failed.");
+            toast.error("Redeploy initiation failed. Check your authorization key.");
         } finally {
             setRedeploying(false);
         }
@@ -164,23 +169,31 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
                 {children}
             </DialogTrigger>
 
-            <DialogContent showCloseButton={false} aria-describedby={undefined} className="sm:max-w-md bg-zinc-950 text-white border-zinc-800 p-0 overflow-hidden font-mono shadow-2xl">
+            <DialogContent showCloseButton={false} aria-describedby={undefined} className="sm:max-w-md bg-card text-foreground border border-zinc-200 dark:border-zinc-800 p-0 overflow-hidden font-mono shadow-2xl rounded-2xl">
                 <DialogTitle className="sr-only">Drawing Studio</DialogTitle>
                 {/* Header */}
-                <div className="flex items-center justify-between p-4 border-b border-zinc-800 bg-zinc-900/50">
+                <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-100/70 dark:bg-zinc-900/50">
                     <div className="flex items-center gap-2">
-                        <Palette size={18} className="text-zinc-400" />
+                        <Palette size={18} className="text-zinc-500 dark:text-zinc-400" />
                         <h2 className="text-sm font-bold tracking-widest uppercase">ThermalFlow Studio</h2>
                     </div>
                     <div className="flex items-center gap-2">
                         <button
+                            type="button"
+                            aria-label="System Administration"
+                            aria-expanded={showSystem}
                             onClick={() => setShowSystem(!showSystem)}
-                            className={cn("p-2 rounded-md transition-colors", showSystem ? "bg-red-900/40 text-red-500" : "text-zinc-500 hover:text-white")}
+                            className={cn("p-2 rounded-md transition-colors", showSystem ? "bg-red-500/15 text-red-600 dark:text-red-400" : "text-zinc-500 hover:text-zinc-900 dark:hover:text-white")}
                             title="System Administration"
                         >
                             <ShieldAlert size={18} />
                         </button>
-                        <button onClick={() => setOpen(false)} className="text-zinc-500 hover:text-white transition-colors">
+                        <button
+                            type="button"
+                            aria-label="Close studio"
+                            onClick={() => setOpen(false)}
+                            className="text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors p-1"
+                        >
                             <X size={18} />
                         </button>
                     </div>
@@ -188,8 +201,10 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
 
                 <div className="p-6 flex flex-col items-center gap-6">
                     {/* Retro Canvas Wrapper */}
-                    <div className="bg-white p-2 rounded shrink-0 shadow-[0_0_15px_rgba(255,255,255,0.1)] relative group">
+                    <div className="bg-white p-2 rounded shrink-0 shadow-md border border-zinc-200 dark:border-zinc-700 relative group">
                         <div
+                            role="grid"
+                            aria-label="24 by 24 pixel drawing canvas"
                             className="grid bg-zinc-100 touch-none"
                             style={{
                                 gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`
@@ -201,7 +216,6 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
                                     <div
                                         key={`${rIdx}-${cIdx}`}
                                         onPointerDown={(e) => {
-                                            // Ensure left-click / touch only
                                             if (e.button !== 0 && e.pointerType === 'mouse') return;
                                             (e.target as HTMLElement).releasePointerCapture(e.pointerId);
                                             handlePointerDown(rIdx, cIdx);
@@ -219,22 +233,26 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
 
                     {/* Tools & Controls */}
                     <div className="flex items-center justify-between w-full">
-                        <div className="flex bg-zinc-900 rounded-lg p-1 border border-zinc-800">
+                        <div className="flex bg-zinc-100 dark:bg-zinc-900 rounded-lg p-1 border border-zinc-200 dark:border-zinc-800" role="group" aria-label="Drawing Tools">
                             <button
+                                type="button"
+                                aria-pressed={!isErasing}
                                 onClick={() => setIsErasing(false)}
                                 className={cn(
-                                    "p-2 rounded-md transition-all text-sm flex items-center gap-2",
-                                    !isErasing ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-400 hover:text-zinc-300"
+                                    "px-3 py-1.5 rounded-md transition-colors text-xs font-bold flex items-center gap-2",
+                                    !isErasing ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-xs" : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                                 )}
                             >
-                                <div className="w-3 h-3 bg-white rounded-sm outline outline-1 outline-white/20" />
+                                <div className="w-3 h-3 bg-zinc-900 dark:bg-white rounded-xs" />
                                 Draw
                             </button>
                             <button
+                                type="button"
+                                aria-pressed={isErasing}
                                 onClick={() => setIsErasing(true)}
                                 className={cn(
-                                    "p-2 rounded-md transition-all text-sm flex items-center gap-2",
-                                    isErasing ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-400 hover:text-zinc-300"
+                                    "px-3 py-1.5 rounded-md transition-colors text-xs font-bold flex items-center gap-2",
+                                    isErasing ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-xs" : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                                 )}
                             >
                                 <Eraser size={14} />
@@ -243,40 +261,80 @@ export function DrawingModal({ children }: { children: React.ReactNode }) {
                         </div>
 
                         <button
+                            type="button"
                             onClick={handleClear}
-                            className="text-xs text-zinc-500 hover:text-red-400 uppercase tracking-widest font-bold px-3 py-2 transition-colors"
+                            className="text-xs text-zinc-500 hover:text-red-600 dark:hover:text-red-400 uppercase tracking-widest font-bold px-3 py-2 transition-colors"
                         >
                             Clear
                         </button>
                     </div>
 
                     {showSystem && (
-                        <div className="w-full bg-red-950/30 border border-red-900/50 p-4 rounded-lg animate-in fade-in slide-in-from-top-2">
-                            <h3 className="text-xs font-bold text-red-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+                        <div className="w-full bg-red-500/10 border border-red-500/30 p-4 rounded-xl animate-in fade-in slide-in-from-top-2 space-y-3">
+                            <h3 className="text-xs font-bold text-red-600 dark:text-red-400 uppercase tracking-widest flex items-center gap-2">
                                 <ShieldAlert size={14} /> Master Control
                             </h3>
-                            <Button
-                                onClick={handleRedeploy}
-                                disabled={redeploying}
-                                variant="destructive"
-                                className="w-full font-bold uppercase tracking-widest h-10 border-red-900 bg-red-900/50 hover:bg-red-800"
-                            >
-                                {redeploying ? <RefreshCw className="animate-spin mr-2" size={16} /> : <RefreshCw className="mr-2" size={16} />}
-                                {redeploying ? 'Rebuilding...' : 'Rebuild System'}
-                            </Button>
-                            <p className="text-[10px] text-zinc-500 mt-2 text-center leading-relaxed">
-                                Forces server to run npm install, rebuild frontend, and restart services. This will interrupt all connections.
+                            {!confirmRedeploy ? (
+                                <Button
+                                    type="button"
+                                    onClick={() => setConfirmRedeploy(true)}
+                                    variant="destructive"
+                                    className="w-full font-bold uppercase tracking-widest h-10 bg-red-600 hover:bg-red-700 text-white"
+                                >
+                                    <RefreshCw className="mr-2" size={15} />
+                                    Rebuild System
+                                </Button>
+                            ) : (
+                                <form onSubmit={handleRedeploy} className="space-y-2.5">
+                                    <label htmlFor="redeploy-auth-key" className="block text-[10px] font-bold uppercase text-red-600 dark:text-red-400">
+                                        Enter Redeploy Authorization Key
+                                    </label>
+                                    <input
+                                        id="redeploy-auth-key"
+                                        type="password"
+                                        value={redeployKey}
+                                        onChange={(e) => setRedeployKey(e.target.value)}
+                                        placeholder="REDEPLOY_KEY..."
+                                        autoFocus
+                                        className="w-full bg-white dark:bg-zinc-950 border border-red-500/40 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-red-500"
+                                    />
+                                    <div className="flex gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => { setConfirmRedeploy(false); setRedeployKey(''); }}
+                                            className="flex-1 text-xs"
+                                        >
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            type="submit"
+                                            size="sm"
+                                            disabled={redeploying || !redeployKey.trim()}
+                                            variant="destructive"
+                                            className="flex-1 text-xs font-bold bg-red-600 hover:bg-red-700 text-white"
+                                        >
+                                            {redeploying ? <RefreshCw className="animate-spin mr-1.5" size={13} /> : null}
+                                            {redeploying ? 'Rebuilding...' : 'Confirm Rebuild'}
+                                        </Button>
+                                    </div>
+                                </form>
+                            )}
+                            <p className="text-[10px] text-zinc-500 dark:text-zinc-400 text-center leading-relaxed">
+                                Pulls latest git main, rebuilds frontend, and restarts services (~60s downtime).
                             </p>
                         </div>
                     )}
                 </div>
 
                 {/* Footer Action */}
-                <div className="p-4 border-t border-zinc-800 bg-zinc-900/30">
+                <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30">
                     <Button
+                        type="button"
                         onClick={handlePrint}
                         disabled={printing}
-                        className="w-full bg-white text-black hover:bg-zinc-200 border-none font-bold uppercase tracking-widest h-12"
+                        className="w-full bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 border-none font-bold uppercase tracking-widest h-11"
                     >
                         {printing ? 'Rasterizing...' : 'Print Artist Edition'}
                     </Button>

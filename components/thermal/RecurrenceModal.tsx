@@ -95,10 +95,12 @@ export function RecurrenceModal({ taskId, trigger, isSelected }: RecurrenceModal
             <DialogTrigger asChild>
                 {trigger || (
                     <button
+                        type="button"
+                        aria-label={`Repeat task "${task.title}"`}
                         className={cn(
-                            "opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-black/5 absolute top-2 right-8 text-black/40 hover:text-black",
+                            "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity p-1.5 rounded hover:bg-black/10 dark:hover:bg-white/10 absolute top-2 right-8 text-zinc-700/60 dark:text-zinc-300/60 hover:text-zinc-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100",
                             (task.recurrence || isSelected) && "opacity-100",
-                            task.recurrence && "text-blue-600 hover:text-blue-700 bg-blue-50"
+                            task.recurrence && "text-amber-600 dark:text-amber-400 bg-amber-500/15"
                         )}
                         onClick={(e) => e.stopPropagation()}
                         title="Repeat Task"
@@ -107,34 +109,36 @@ export function RecurrenceModal({ taskId, trigger, isSelected }: RecurrenceModal
                     </button>
                 )}
             </DialogTrigger>
-            <DialogContent showCloseButton={false} aria-describedby={undefined} className="sm:max-w-xs bg-white dark:bg-zinc-950 p-0 overflow-hidden gap-0 border-zinc-200 dark:border-zinc-800">
+            <DialogContent showCloseButton={false} aria-describedby={undefined} className="sm:max-w-xs bg-card text-foreground p-0 overflow-hidden gap-0 border border-zinc-200 dark:border-zinc-800 font-mono rounded-2xl shadow-2xl">
                 <DialogTitle className="sr-only">Configure Recurrence</DialogTitle>
 
                 {/* Header */}
-                <div className="bg-zinc-100 dark:bg-zinc-900 p-4 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center">
+                <div className="bg-zinc-100/70 dark:bg-zinc-900/50 p-4 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center">
                     <h2 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2">
-                        <CalendarClock size={16} />
+                        <CalendarClock size={16} className="text-amber-600 dark:text-amber-400" />
                         Repeat Task
                     </h2>
-                    <DialogClose className="opacity-70 hover:opacity-100">
+                    <DialogClose aria-label="Close recurrence settings" className="opacity-70 hover:opacity-100 p-1">
                         <X size={16} />
                     </DialogClose>
                 </div>
 
-                <div className="p-4 space-y-6">
+                <div className="p-4 space-y-5">
                     {/* Frequency */}
-                    <div className="space-y-3">
-                        <label className="text-[10px] font-bold uppercase text-zinc-400">Frequency</label>
-                        <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-2">
+                        <span className="text-[10px] font-bold uppercase text-zinc-600 dark:text-zinc-400 block">Frequency</span>
+                        <div className="grid grid-cols-2 gap-2" role="group" aria-label="Recurrence Frequency">
                             {(['daily', 'weekly'] as const).map(f => (
                                 <button
                                     key={f}
+                                    type="button"
+                                    aria-pressed={frequency === f}
                                     onClick={() => setFrequency(f)}
                                     className={cn(
-                                        "px-3 py-2 rounded border text-sm capitalize transition-all",
+                                        "px-3 py-2 rounded-lg border text-xs font-bold uppercase tracking-wider transition-colors",
                                         frequency === f
-                                            ? "bg-black text-white border-black dark:bg-white dark:text-black"
-                                            : "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 hover:border-zinc-300"
+                                            ? "bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100"
+                                            : "bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 hover:border-zinc-400"
                                     )}
                                 >
                                     {f}
@@ -144,49 +148,54 @@ export function RecurrenceModal({ taskId, trigger, isSelected }: RecurrenceModal
                     </div>
 
                     {/* Time */}
-                    <div className="space-y-3">
-                        <label className="text-[10px] font-bold uppercase text-zinc-400">Time</label>
+                    <div className="space-y-2">
+                        <label htmlFor={`recurrence-time-${taskId}`} className="text-[10px] font-bold uppercase text-zinc-600 dark:text-zinc-400 block">Time</label>
                         <input
+                            id={`recurrence-time-${taskId}`}
                             type="time"
-                            className="w-full p-2 border border-zinc-200 dark:border-zinc-800 rounded bg-transparent font-mono text-lg"
+                            className="w-full p-2 border border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50 dark:bg-zinc-900 font-mono text-base"
                             value={time}
                             onChange={(e) => setTime(e.target.value)}
                         />
                     </div>
 
                     {/* Action */}
-                    <div className="space-y-3">
-                        <label className="text-[10px] font-bold uppercase text-zinc-400">When Completed</label>
-                        <div className="grid grid-cols-1 gap-2">
+                    <div className="space-y-2">
+                        <span className="text-[10px] font-bold uppercase text-zinc-600 dark:text-zinc-400 block">When Triggered</span>
+                        <div className="grid grid-cols-1 gap-2" role="group" aria-label="Recurrence Action">
                             <button
+                                type="button"
+                                aria-pressed={action === 'reset'}
                                 onClick={() => setAction('reset')}
                                 className={cn(
-                                    "flex items-center gap-3 px-3 py-2 rounded border text-sm transition-all text-left",
+                                    "flex items-center gap-3 px-3 py-2.5 rounded-lg border text-xs transition-colors text-left",
                                     action === 'reset'
-                                        ? "bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300"
-                                        : "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
+                                        ? "bg-amber-500/15 border-amber-500/40 text-amber-800 dark:text-amber-300"
+                                        : "bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
                                 )}
                             >
-                                <RotateCcw size={16} className="shrink-0" />
+                                <RotateCcw size={15} className="shrink-0" />
                                 <div className="flex flex-col">
                                     <span className="font-bold">Reset</span>
-                                    <span className="text-[10px] opacity-70">Uncheck and move to top</span>
+                                    <span className="text-[10px] opacity-75">Uncheck existing task</span>
                                 </div>
                             </button>
 
                             <button
+                                type="button"
+                                aria-pressed={action === 'clone'}
                                 onClick={() => setAction('clone')}
                                 className={cn(
-                                    "flex items-center gap-3 px-3 py-2 rounded border text-sm transition-all text-left",
+                                    "flex items-center gap-3 px-3 py-2.5 rounded-lg border text-xs transition-colors text-left",
                                     action === 'clone'
-                                        ? "bg-purple-50 border-purple-200 text-purple-700 dark:bg-purple-900/20 dark:border-purple-800 dark:text-purple-300"
-                                        : "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
+                                        ? "bg-amber-500/15 border-amber-500/40 text-amber-800 dark:text-amber-300"
+                                        : "bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
                                 )}
                             >
-                                <Copy size={16} className="shrink-0" />
+                                <Copy size={15} className="shrink-0" />
                                 <div className="flex flex-col">
                                     <span className="font-bold">Clone</span>
-                                    <span className="text-[10px] opacity-70">Create a new copy</span>
+                                    <span className="text-[10px] opacity-75">Create a fresh copy</span>
                                 </div>
                             </button>
                         </div>
@@ -196,12 +205,12 @@ export function RecurrenceModal({ taskId, trigger, isSelected }: RecurrenceModal
                 {/* Footer */}
                 <div className="bg-zinc-50 dark:bg-zinc-900/50 p-4 border-t border-zinc-200 dark:border-zinc-800 flex gap-2">
                     {task.recurrence && (
-                        <Button variant="ghost" className="flex-1 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20" onClick={handleClear}>
+                        <Button type="button" variant="ghost" className="flex-1 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 text-xs font-bold" onClick={handleClear}>
                             Disable
                         </Button>
                     )}
-                    <Button className="flex-1 gap-2" onClick={handleSave}>
-                        <Check size={16} />
+                    <Button type="button" className="flex-1 gap-2 bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-xs font-bold" onClick={handleSave}>
+                        <Check size={14} />
                         Save
                     </Button>
                 </div>

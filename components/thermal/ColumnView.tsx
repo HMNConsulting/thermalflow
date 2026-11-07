@@ -63,10 +63,10 @@ export function ColumnView() {
     const toggleSelectedTask = useTaskStore(state => state.toggleSelectedTask);
     const deleteTask = useTaskStore(state => state.deleteTask);
     const selectedTaskId = useTaskStore(state => state.selectedTaskId);
-    const tasks = useTaskStore(state => state.tasks);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            const tasks = useTaskStore.getState().tasks;
             const target = e.target as HTMLElement;
             const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
 
@@ -218,19 +218,10 @@ export function ColumnView() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectNextTask, selectPrevTask, selectParentTask, selectChildTask, toggleSelectedTask, selectedTaskId, path, tasks, isHotkeysOpen, toggleCompletedColumn, selectTask]);
+    }, [selectNextTask, selectPrevTask, selectParentTask, selectChildTask, toggleSelectedTask, selectedTaskId, path, isHotkeysOpen, toggleCompletedColumn, selectTask, deleteTask, undo, redo]);
 
     return (
-        <div className="flex-1 flex overflow-hidden bg-zinc-50 dark:bg-zinc-950 relative min-h-0">
-            {/* Toggle Button */}
-            <button
-                onClick={toggleCompletedColumn}
-                className="absolute top-2 right-5 z-50 p-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-md hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all duration-300"
-                title={showCompleted ? "Hide Completed" : "Show Completed"}
-            >
-                {showCompleted ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-            </button>
-
+        <div className="flex-1 flex overflow-hidden bg-background relative min-h-0">
             {/* Main Content Areas */}
             {viewMode === 'column' ? (
                 <div
@@ -257,7 +248,7 @@ export function ColumnView() {
                     </AnimatePresence>
 
                     {/* Spacer for comfortable viewing of the last column */}
-                    <div className="w-20 flex-shrink-0" />
+                    <div className="w-8 sm:w-20 flex-shrink-0" />
                 </div>
             ) : (
                 <GridView />
@@ -267,19 +258,18 @@ export function ColumnView() {
             <GlobalTaskInput />
 
             {/* Pinned Completed Column - Always visible on right */}
-            <AnimatePresence>
+            <AnimatePresence initial={false}>
                 {showCompleted && (
-                    <motion.div
-                        initial={{ x: '100%', width: 0 }}
-                        animate={{ x: 0, width: 320 }}
-                        exit={{ x: '100%', width: 0 }}
-                        transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                        className="h-full flex-shrink-0 overflow-hidden"
+                    <motion.aside
+                        aria-label="Completed Tasks"
+                        initial={{ x: '100%', opacity: 0 }}
+                        animate={{ x: 0, opacity: 1 }}
+                        exit={{ x: '100%', opacity: 0 }}
+                        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                        className="h-full w-80 flex-shrink-0 overflow-hidden z-20"
                     >
-                        <div className="w-80 h-full">
-                            <CompletedColumn />
-                        </div>
-                    </motion.div>
+                        <CompletedColumn />
+                    </motion.aside>
                 )}
             </AnimatePresence>
 
