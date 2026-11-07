@@ -808,6 +808,51 @@ function performBarcodePrint(data, format, title) {
     });
 }
 
+// --- Proxy /mcp to main server (port 3000) so https://print.nebulous.space/mcp works directly ---
+const MAIN_SERVER_BASE = process.env.MAIN_SERVER_BASE || 'http://localhost:3000';
+
+app.get('/mcp', async (req, res) => {
+    try {
+        const response = await fetch(`${MAIN_SERVER_BASE}/mcp`, {
+            headers: { 'Accept': req.headers.accept || 'application/json' }
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+    } catch (err) {
+        res.status(502).json({ error: 'Main ThermalFlow server unreachable', details: err.message });
+    }
+});
+
+app.post('/mcp', async (req, res) => {
+    try {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+        const response = await fetch(`${MAIN_SERVER_BASE}/mcp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body)
+        });
+        if (response.status === 202) {
+            return res.status(202).end();
+        }
+        const data = await response.json();
+        res.status(response.status).json(data);
+    } catch (err) {
+        res.status(502).json({ jsonrpc: '2.0', id: req.body?.id || null, error: { code: -32000, message: err.message } });
+    }
+});
+
+app.options('/mcp', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+    res.status(204).end();
+});
+
+app.delete('/mcp', (req, res) => {
+    res.status(200).json({ ok: true });
+});
+
 // --- Initialize ---
 // Load persisted queue on startup
 const persistedJobs = loadQueue();

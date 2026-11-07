@@ -169,7 +169,7 @@ export const useTaskStore = create<TaskStore>()(
             lastAction: null,
 
             // Preferences
-            autoPrintEnabled: false,
+            autoPrintEnabled: true,
             toggleAutoPrint: () => set((state) => ({ autoPrintEnabled: !state.autoPrintEnabled })),
             soundEnabled: true,
             toggleSound: () => set((state) => ({ soundEnabled: !state.soundEnabled })),

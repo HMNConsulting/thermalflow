@@ -832,66 +832,60 @@ app.prepare().then(() => {
 
     // --- Task Capture Endpoint (adds task to web UI + prints) ---
 
-    expressApp.post('/api/tasks/capture', async (req, res) => {
-        const { title, parentId = 'root', print = true } = req.body;
+    const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'https://tasks.nebulous.space';
 
-        if (!title || typeof title !== 'string' || title.trim().length === 0) {
-            return res.status(400).json({ error: 'title is required and must be a non-empty string' });
-        }
-        if (title.length > 200) {
-            return res.status(400).json({ error: 'title too long: max 200 chars' });
-        }
-
+    async function createTaskAndPrint({ title, parentId = 'root', priority, print = true, qrOnChit = true, createdBy = 'gemini-mcp' }) {
+        const cleanTitle = title.trim();
         const newId = Math.random().toString(36).substring(2, 9);
         const now = Date.now();
+        const targetParentId = masterState.tasks[parentId] ? parentId : 'root';
+
         const newTask = {
             id: newId,
-            title: title.trim(),
+            title: cleanTitle,
             completed: false,
             children: [],
-            parentId: parentId,
-            createdAt: now
+            parentId: targetParentId,
+            createdAt: now,
+            createdBy,
+            priority: priority && priority !== 'normal' ? priority : undefined
         };
 
-        // Update master state
         masterState.tasks[newId] = newTask;
-
-        // Add to parent's children
-        const parent = masterState.tasks[parentId];
-        if (parent) {
-            masterState.tasks[parentId] = {
-                ...parent,
-                children: [...parent.children, newId]
-            };
-        } else {
-            // Fallback to root if parent not found
-            masterState.tasks.root.children.push(newId);
-        }
+        const parent = masterState.tasks[targetParentId];
+        masterState.tasks[targetParentId] = {
+            ...parent,
+            children: [...parent.children, newId]
+        };
 
         masterState.version++;
         masterState.lastModified = now;
         saveData(masterState);
 
-        // Broadcast to all connected clients
         if (global.io) {
-            global.io.emit('sync:patch', {
+            global.io.emit('sync:patched', {
                 tasks: {
                     [newId]: newTask,
-                    [parentId]: masterState.tasks[parentId] || masterState.tasks.root
+                    [targetParentId]: masterState.tasks[targetParentId]
                 },
                 version: masterState.version,
                 lastModified: masterState.lastModified
             });
         }
 
-        // Also print if requested (default: true)
         let printResult = null;
         if (print) {
             try {
+                const qrUrl = qrOnChit ? `${PUBLIC_APP_URL}/api/tasks/toggle-qr?id=${newId}` : undefined;
                 const printResponse = await fetch(`${PRINT_SERVER_BASE}/print-single`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ taskName: title.trim() })
+                    body: JSON.stringify({
+                        taskName: cleanTitle,
+                        taskId: newId,
+                        qrUrl,
+                        priority: newTask.priority
+                    })
                 });
                 printResult = await printResponse.json();
             } catch (printError) {
@@ -900,14 +894,518 @@ app.prepare().then(() => {
             }
         }
 
-        console.log(`Task captured via API: "${title}" (id: ${newId}, printed: ${print})`);
-        res.json({ 
-            success: true, 
-            taskId: newId, 
-            task: newTask,
-            printed: print,
-            printResult 
+        return { taskId: newId, task: newTask, printed: Boolean(print), printResult };
+    }
+
+    expressApp.post('/api/tasks/capture', async (req, res) => {
+        const { title, parentId = 'root', priority, print = true, qrOnChit = true } = req.body;
+
+        if (!title || typeof title !== 'string' || title.trim().length === 0) {
+            return res.status(400).json({ error: 'title is required and must be a non-empty string' });
+        }
+        if (title.length > 200) {
+            return res.status(400).json({ error: 'title too long: max 200 chars' });
+        }
+
+        const result = await createTaskAndPrint({ title, parentId, priority, print, qrOnChit, createdBy: 'api' });
+        console.log(`Task captured via API: "${title}" (id: ${result.taskId}, printed: ${print})`);
+        res.json({
+            success: true,
+            ...result
         });
+    });
+
+    // --- Model Context Protocol (MCP) Server Endpoints (/mcp & /sse) ---
+    const MCP_TOOLS = [
+        {
+            name: 'list_tasks',
+            description: 'View tasks on the ThermalFlow board. Returns pending and/or completed tasks with their IDs, hierarchy, priority, and subtask counts.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    status: {
+                        type: 'string',
+                        enum: ['pending', 'completed', 'all'],
+                        description: 'Filter tasks by completion status (default: pending).'
+                    },
+                    parentId: {
+                        type: 'string',
+                        description: 'Optional parent task ID to list only subtasks of a specific task.'
+                    },
+                    search: {
+                        type: 'string',
+                        description: 'Optional search keyword to filter tasks by title.'
+                    }
+                }
+            }
+        },
+        {
+            name: 'add_task',
+            description: 'Add a new task (or multiple tasks) to ThermalFlow and physically print a thermal receipt chit by default. Print on creation defaults to true.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    title: {
+                        type: 'string',
+                        description: 'The title of the task to create.'
+                    },
+                    subtasks: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Optional list of subtask titles to create under this task.'
+                    },
+                    parentId: {
+                        type: 'string',
+                        description: 'Parent task ID (defaults to "root" for top-level tasks).'
+                    },
+                    priority: {
+                        type: 'string',
+                        enum: ['normal', 'high', 'urgent'],
+                        description: 'Task priority level (default: normal).'
+                    },
+                    print: {
+                        type: 'boolean',
+                        description: 'Whether to physically print the task chit on the thermal printer upon creation. Defaults to true.'
+                    }
+                },
+                required: ['title']
+            }
+        },
+        {
+            name: 'complete_task',
+            description: 'Mark a task as completed (or reopen it) by task ID or by matching its title.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    taskId: {
+                        type: 'string',
+                        description: 'Exact ID of the task to complete.'
+                    },
+                    titleSearch: {
+                        type: 'string',
+                        description: 'If taskId is unknown, search text to match the task title.'
+                    },
+                    completed: {
+                        type: 'boolean',
+                        description: 'Completion state to set (defaults to true).'
+                    }
+                }
+            }
+        },
+        {
+            name: 'print_tasks',
+            description: 'Print a single task chit, an action plan checklist, or a full task manifest receipt on the physical thermal printer.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    mode: {
+                        type: 'string',
+                        enum: ['single', 'manifest', 'today'],
+                        description: '"single" prints one task chit; "manifest" prints all pending tasks; "today" prints today\'s pending tasks.'
+                    },
+                    taskId: {
+                        type: 'string',
+                        description: 'Task ID to print (when mode is "single") or root of subtree.'
+                    },
+                    customTitle: {
+                        type: 'string',
+                        description: 'Optional custom text or title to print.'
+                    }
+                }
+            }
+        },
+        {
+            name: 'delete_task',
+            description: 'Delete a task from the ThermalFlow board by ID.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    taskId: {
+                        type: 'string',
+                        description: 'The ID of the task to delete.'
+                    }
+                },
+                required: ['taskId']
+            }
+        }
+    ];
+
+    async function executeMcpTool(name, args = {}) {
+        if (name === 'list_tasks') {
+            const status = args.status || 'pending';
+            const search = (args.search || '').trim().toLowerCase();
+            const parentFilter = args.parentId;
+
+            const allTasks = Object.values(masterState.tasks).filter(t => t.id !== 'root');
+            const filtered = allTasks.filter(t => {
+                if (status === 'pending' && t.completed) return false;
+                if (status === 'completed' && !t.completed) return false;
+                if (parentFilter && t.parentId !== parentFilter) return false;
+                if (search && !t.title.toLowerCase().includes(search)) return false;
+                return true;
+            });
+
+            const lines = filtered.map(t => {
+                const parentTitle = t.parentId && t.parentId !== 'root' && masterState.tasks[t.parentId]
+                    ? ` (under "${masterState.tasks[t.parentId].title}")`
+                    : '';
+                const prio = t.priority && t.priority !== 'normal' ? ` [${t.priority.toUpperCase()}]` : '';
+                return `- [${t.completed ? 'x' : ' '}] ${t.title}${prio} (id: ${t.id})${parentTitle}`;
+            });
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: filtered.length > 0
+                        ? `Found ${filtered.length} task(s):\n${lines.join('\n')}`
+                        : `No ${status} tasks found.`
+                }]
+            };
+        }
+
+        if (name === 'add_task') {
+            const title = (args.title || '').trim();
+            if (!title) {
+                return { isError: true, content: [{ type: 'text', text: 'Error: title is required.' }] };
+            }
+            // Default print to true unless explicitly passed as false
+            const shouldPrint = args.print !== false;
+            const parentId = args.parentId || 'root';
+            const priority = args.priority || 'normal';
+
+            const mainResult = await createTaskAndPrint({
+                title,
+                parentId,
+                priority,
+                print: shouldPrint,
+                qrOnChit: true,
+                createdBy: 'gemini-mcp'
+            });
+
+            const createdSubtasks = [];
+            if (Array.isArray(args.subtasks) && args.subtasks.length > 0) {
+                for (const subTitle of args.subtasks) {
+                    if (typeof subTitle === 'string' && subTitle.trim()) {
+                        const subRes = await createTaskAndPrint({
+                            title: subTitle.trim(),
+                            parentId: mainResult.taskId,
+                            priority: 'normal',
+                            print: shouldPrint,
+                            qrOnChit: true,
+                            createdBy: 'gemini-mcp'
+                        });
+                        createdSubtasks.push(subRes.task);
+                    }
+                }
+            }
+
+            const printStatusMsg = shouldPrint
+                ? (mainResult.printResult && !mainResult.printResult.error ? 'Printed to thermal printer.' : 'Queued/simulated print.')
+                : 'Print skipped (print=false).';
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Created task "${mainResult.task.title}" (id: ${mainResult.taskId})${createdSubtasks.length ? ` with ${createdSubtasks.length} subtask(s)` : ''}. ${printStatusMsg}`
+                }]
+            };
+        }
+
+        if (name === 'complete_task') {
+            let target = args.taskId ? masterState.tasks[args.taskId] : null;
+            if (!target && args.titleSearch) {
+                const q = args.titleSearch.trim().toLowerCase();
+                target = Object.values(masterState.tasks).find(t => t.id !== 'root' && t.title.toLowerCase().includes(q));
+            }
+            if (!target || target.id === 'root') {
+                return { isError: true, content: [{ type: 'text', text: 'Task not found.' }] };
+            }
+
+            const newCompleted = args.completed !== undefined ? Boolean(args.completed) : true;
+            const now = Date.now();
+            const changedTasks = {};
+
+            const stack = [target.id];
+            while (stack.length > 0) {
+                const tid = stack.pop();
+                const t = masterState.tasks[tid];
+                if (!t) continue;
+                const updated = {
+                    ...t,
+                    completed: newCompleted,
+                    completedAt: newCompleted ? now : undefined
+                };
+                masterState.tasks[tid] = updated;
+                changedTasks[tid] = updated;
+                if (newCompleted && Array.isArray(t.children)) {
+                    t.children.forEach(cid => stack.push(cid));
+                }
+            }
+
+            masterState.version++;
+            masterState.lastModified = now;
+            saveData(masterState);
+
+            if (global.io) {
+                global.io.emit('sync:patched', {
+                    tasks: changedTasks,
+                    version: masterState.version,
+                    lastModified: masterState.lastModified
+                });
+            }
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Task "${target.title}" (id: ${target.id}) marked as ${newCompleted ? 'COMPLETED' : 'INCOMPLETE'}.`
+                }]
+            };
+        }
+
+        if (name === 'print_tasks') {
+            const mode = args.mode || (args.taskId ? 'single' : 'manifest');
+
+            if (mode === 'single') {
+                const task = args.taskId ? masterState.tasks[args.taskId] : null;
+                const taskName = args.customTitle || task?.title;
+                if (!taskName) {
+                    return { isError: true, content: [{ type: 'text', text: 'Provide a valid taskId or customTitle for single chit printing.' }] };
+                }
+                const qrUrl = task ? `${PUBLIC_APP_URL}/api/tasks/toggle-qr?id=${task.id}` : undefined;
+                const resp = await fetch(`${PRINT_SERVER_BASE}/print-single`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        taskName,
+                        taskId: task?.id,
+                        qrUrl,
+                        priority: task?.priority
+                    })
+                });
+                const data = await resp.json().catch(() => ({}));
+                return {
+                    content: [{
+                        type: 'text',
+                        text: resp.ok ? `Printed single chit for "${taskName}".` : `Print failed: ${data.error || resp.statusText}`
+                    }]
+                };
+            }
+
+            const todayStr = new Date().toDateString();
+            const list = [];
+            const traverse = (id, level) => {
+                const t = masterState.tasks[id];
+                if (!t) return;
+                if (id !== 'root' && !t.completed) {
+                    if (mode !== 'today' || new Date(t.createdAt || 0).toDateString() === todayStr) {
+                        list.push(`[ ] ${'  '.repeat(Math.max(0, level - 1))}${t.title}`);
+                    }
+                }
+                (t.children || []).forEach(cid => traverse(cid, level + 1));
+            };
+            const startId = args.taskId && masterState.tasks[args.taskId] ? args.taskId : 'root';
+            traverse(startId, 0);
+
+            if (list.length === 0) {
+                return { content: [{ type: 'text', text: 'No pending tasks to print.' }] };
+            }
+
+            const resp = await fetch(`${PRINT_SERVER_BASE}/print`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: args.customTitle || (mode === 'today' ? 'TODAY MANIFEST' : 'THERMALFLOW MANIFEST'),
+                    date: new Date().toLocaleString(),
+                    tasks: list.slice(0, 50)
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            return {
+                content: [{
+                    type: 'text',
+                    text: resp.ok ? `Printed manifest with ${list.length} task(s).` : `Print failed: ${data.error || resp.statusText}`
+                }]
+            };
+        }
+
+        if (name === 'delete_task') {
+            const id = args.taskId;
+            if (!id || id === 'root' || !masterState.tasks[id]) {
+                return { isError: true, content: [{ type: 'text', text: 'Valid taskId is required.' }] };
+            }
+            const deletedTitle = masterState.tasks[id].title;
+            const parent = Object.values(masterState.tasks).find(t => (t.children || []).includes(id));
+            delete masterState.tasks[id];
+
+            const changedTasks = {};
+            if (parent) {
+                const updatedParent = {
+                    ...parent,
+                    children: parent.children.filter(cid => cid !== id)
+                };
+                masterState.tasks[parent.id] = updatedParent;
+                changedTasks[parent.id] = updatedParent;
+            }
+
+            masterState.version++;
+            masterState.lastModified = Date.now();
+            saveData(masterState);
+
+            if (global.io) {
+                global.io.emit('sync:patched', {
+                    tasks: changedTasks,
+                    deletedIds: [id],
+                    version: masterState.version,
+                    lastModified: masterState.lastModified
+                });
+            }
+
+            return {
+                content: [{ type: 'text', text: `Deleted task "${deletedTitle}" (id: ${id}).` }]
+            };
+        }
+
+        throw new Error(`Unknown tool: ${name}`);
+    }
+
+    async function handleMcpRpcRequest(rpc) {
+        if (!rpc || typeof rpc !== 'object') return null;
+        const { id, method, params } = rpc;
+
+        // Notifications (no id) do not return a response object
+        if (id === undefined || id === null) {
+            return null;
+        }
+
+        try {
+            if (method === 'initialize') {
+                return {
+                    jsonrpc: '2.0',
+                    id,
+                    result: {
+                        protocolVersion: (params && params.protocolVersion) || '2024-11-05',
+                        capabilities: {
+                            tools: { listChanged: false }
+                        },
+                        serverInfo: {
+                            name: 'thermalflow-mcp',
+                            version: '1.0.0'
+                        }
+                    }
+                };
+            }
+
+            if (method === 'ping') {
+                return { jsonrpc: '2.0', id, result: {} };
+            }
+
+            if (method === 'tools/list') {
+                return {
+                    jsonrpc: '2.0',
+                    id,
+                    result: { tools: MCP_TOOLS }
+                };
+            }
+
+            if (method === 'tools/call') {
+                const toolName = params?.name;
+                const toolArgs = params?.arguments || {};
+                const result = await executeMcpTool(toolName, toolArgs);
+                return {
+                    jsonrpc: '2.0',
+                    id,
+                    result
+                };
+            }
+
+            if (method === 'resources/list') {
+                return { jsonrpc: '2.0', id, result: { resources: [] } };
+            }
+
+            if (method === 'prompts/list') {
+                return { jsonrpc: '2.0', id, result: { prompts: [] } };
+            }
+
+            return {
+                jsonrpc: '2.0',
+                id,
+                error: { code: -32601, message: `Method not found: ${method}` }
+            };
+        } catch (err) {
+            return {
+                jsonrpc: '2.0',
+                id,
+                error: { code: -32000, message: err.message || 'Internal MCP server error' }
+            };
+        }
+    }
+
+    const mcpSseSessions = new Map();
+
+    // Streamable HTTP + SSE endpoint at /mcp
+    expressApp.get('/mcp', (req, res) => {
+        const accept = req.headers.accept || '';
+        if (accept.includes('text/event-stream')) {
+            const sessionId = Math.random().toString(36).substring(2, 12);
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache, no-transform',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*'
+            });
+            mcpSseSessions.set(sessionId, res);
+            res.write(`event: endpoint\ndata: /mcp?sessionId=${sessionId}\n\n`);
+            req.on('close', () => mcpSseSessions.delete(sessionId));
+            return;
+        }
+        res.json({
+            name: 'thermalflow-mcp',
+            version: '1.0.0',
+            status: 'ok',
+            transport: ['streamable-http', 'sse'],
+            tools: MCP_TOOLS.map(t => t.name)
+        });
+    });
+
+    expressApp.post('/mcp', async (req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+        const sessionId = req.query.sessionId;
+        const sseRes = sessionId ? mcpSseSessions.get(sessionId) : null;
+
+        const payload = req.body;
+        if (Array.isArray(payload)) {
+            const responses = (await Promise.all(payload.map(item => handleMcpRpcRequest(item)))).filter(Boolean);
+            if (sseRes) {
+                responses.forEach(r => sseRes.write(`event: message\ndata: ${JSON.stringify(r)}\n\n`));
+                return res.status(202).end();
+            }
+            if (responses.length === 0) return res.status(202).end();
+            return res.json(responses);
+        }
+
+        const response = await handleMcpRpcRequest(payload);
+        if (sseRes) {
+            if (response) {
+                sseRes.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+            }
+            return res.status(202).end();
+        }
+        if (!response) {
+            return res.status(202).end();
+        }
+        return res.json(response);
+    });
+
+    expressApp.options('/mcp', (req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+        res.status(204).end();
+    });
+
+    expressApp.delete('/mcp', (req, res) => {
+        res.status(200).json({ ok: true });
     });
 
     // --- AI Task Decomposition Engine & Endpoint ---

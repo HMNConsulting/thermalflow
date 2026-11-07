@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useTaskStore } from '@/lib/store';
-import { Printer, CheckCircle2, AlertTriangle, RefreshCw, QrCode, Volume2, VolumeX, Sparkles, ChevronDown, KeyRound, Eye, EyeOff, Check, Trash2 } from 'lucide-react';
+import { Printer, CheckCircle2, AlertTriangle, RefreshCw, QrCode, Volume2, VolumeX, Sparkles, ChevronDown, KeyRound, Eye, EyeOff, Check, Trash2, Copy, Terminal } from 'lucide-react';
 import { getPrintServerUrl, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -335,6 +335,32 @@ export function PrinterStatusBar() {
                                         <Trash2 size={12} />
                                     </button>
                                 ) : null}
+                            </div>
+                        </div>
+
+                        {/* Gemini MCP Server Link */}
+                        <div className="pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800 mb-3">
+                            <div className="flex items-center justify-between mb-1 px-1">
+                                <div className="flex items-center gap-1.5">
+                                    <Terminal size={12} className="text-emerald-500" />
+                                    <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-600 dark:text-zinc-400">Gemini MCP URL</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const mcpUrl = 'https://print.nebulous.space/mcp';
+                                        navigator.clipboard.writeText(mcpUrl);
+                                        toast.success('Copied MCP Server URL!');
+                                    }}
+                                    className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center gap-1 transition-colors"
+                                    title="Copy MCP URL for Gemini Connected Apps"
+                                >
+                                    <Copy size={10} />
+                                    <span>COPY</span>
+                                </button>
+                            </div>
+                            <div className="px-2 py-1 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded text-[10px] text-zinc-600 dark:text-zinc-400 truncate select-all">
+                                https://print.nebulous.space/mcp
                             </div>
                         </div>
 
