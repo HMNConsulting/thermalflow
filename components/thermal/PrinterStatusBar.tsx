@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useTaskStore } from '@/lib/store';
-import { Printer, CheckCircle2, AlertTriangle, RefreshCw, QrCode, Volume2, VolumeX, Sparkles, ChevronDown } from 'lucide-react';
+import { Printer, CheckCircle2, AlertTriangle, RefreshCw, QrCode, Volume2, VolumeX, Sparkles, ChevronDown, KeyRound, Eye, EyeOff, Check, Trash2 } from 'lucide-react';
 import { getPrintServerUrl, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -13,12 +13,24 @@ interface PrinterStatus {
     error?: string;
 }
 
+interface GeminiConfig {
+    configured: boolean;
+    source: 'ui' | 'env' | 'none';
+    masked: string;
+    model: string;
+}
+
 export function PrinterStatusBar() {
     const [status, setStatus] = useState<PrinterStatus | null>(null);
     const [queueLength, setQueueLength] = useState(0);
     const [loading, setLoading] = useState(false);
     const [isTesting, setIsTesting] = useState(false);
     const [isOpen, setIsOpen] = useState(false);
+
+    const [geminiConfig, setGeminiConfig] = useState<GeminiConfig | null>(null);
+    const [apiKeyInput, setApiKeyInput] = useState('');
+    const [showKey, setShowKey] = useState(false);
+    const [savingKey, setSavingKey] = useState(false);
 
     const autoPrintEnabled = useTaskStore((state) => state.autoPrintEnabled);
     const toggleAutoPrint = useTaskStore((state) => state.toggleAutoPrint);
@@ -48,11 +60,70 @@ export function PrinterStatusBar() {
         }
     };
 
+    const fetchGeminiConfig = async () => {
+        try {
+            const res = await fetch('/api/config/gemini');
+            if (res.ok) {
+                const data = await res.json();
+                setGeminiConfig(data);
+            }
+        } catch {
+            // ignore
+        }
+    };
+
     useEffect(() => {
         fetchStatus();
+        fetchGeminiConfig();
         const interval = setInterval(fetchStatus, 8000);
         return () => clearInterval(interval);
     }, []);
+
+    const handleSaveGeminiKey = async () => {
+        if (!apiKeyInput.trim()) return;
+        setSavingKey(true);
+        try {
+            const res = await fetch('/api/config/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey: apiKeyInput.trim() })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setGeminiConfig(data);
+                setApiKeyInput('');
+                setShowKey(false);
+                toast.success('Gemini API key saved!');
+            } else {
+                toast.error('Failed to save API key');
+            }
+        } catch {
+            toast.error('Error saving API key');
+        } finally {
+            setSavingKey(false);
+        }
+    };
+
+    const handleClearGeminiKey = async () => {
+        setSavingKey(true);
+        try {
+            const res = await fetch('/api/config/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey: '' })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setGeminiConfig(data);
+                setApiKeyInput('');
+                toast.info('Custom Gemini API key cleared');
+            }
+        } catch {
+            toast.error('Error clearing API key');
+        } finally {
+            setSavingKey(false);
+        }
+    };
 
     const handleTestPrint = async () => {
         setIsTesting(true);
@@ -178,6 +249,72 @@ export function PrinterStatusBar() {
                                     {soundEnabled ? 'ON' : 'MUTED'}
                                 </span>
                             </button>
+                        </div>
+
+                        {/* Gemini AI Configuration */}
+                        <div className="pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800 mb-3">
+                            <div className="flex items-center justify-between mb-1.5 px-1">
+                                <div className="flex items-center gap-1.5">
+                                    <Sparkles size={12} className="text-amber-500" />
+                                    <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-500 dark:text-zinc-400">Gemini API Key</span>
+                                </div>
+                                {geminiConfig?.configured ? (
+                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                        {geminiConfig.source === 'env' ? 'ENV ACTIVE' : geminiConfig.masked}
+                                    </span>
+                                ) : (
+                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-400">
+                                        NOT SET
+                                    </span>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <div className="relative flex-1">
+                                    <input
+                                        type={showKey ? 'text' : 'password'}
+                                        value={apiKeyInput}
+                                        onChange={(e) => setApiKeyInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                handleSaveGeminiKey();
+                                            }
+                                        }}
+                                        placeholder={geminiConfig?.configured ? 'Replace API key...' : 'Paste AIza... key'}
+                                        className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg pl-2.5 pr-7 py-1.5 text-[11px] font-mono text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-amber-500/60"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowKey(!showKey)}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                                        title={showKey ? 'Hide key' : 'Show key'}
+                                    >
+                                        {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                                    </button>
+                                </div>
+                                {apiKeyInput.trim() ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleSaveGeminiKey}
+                                        disabled={savingKey}
+                                        className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-[10px] rounded-lg transition-colors flex items-center gap-1 shrink-0 disabled:opacity-50"
+                                        title="Save Gemini API Key"
+                                    >
+                                        <Check size={12} />
+                                        <span>SAVE</span>
+                                    </button>
+                                ) : geminiConfig?.source === 'ui' ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleClearGeminiKey}
+                                        disabled={savingKey}
+                                        className="p-1.5 text-zinc-400 hover:text-red-500 border border-zinc-200 dark:border-zinc-800 hover:border-red-500/30 rounded-lg transition-colors shrink-0"
+                                        title="Clear saved API key"
+                                    >
+                                        <Trash2 size={12} />
+                                    </button>
+                                ) : null}
+                            </div>
                         </div>
 
                         {/* Test Print Button */}

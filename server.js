@@ -389,9 +389,14 @@ app.prepare().then(() => {
     expressApp.use(bodyParser.json());
 
     // --- Socket.IO Sync ---
+    function getPublicState(state) {
+        const { geminiApiKey, ...publicState } = state;
+        return publicState;
+    }
+
     io.on('connection', (socket) => {
-        // Send current state to newly connected client
-        socket.emit('sync:init', masterState);
+        // Send current state to newly connected client (excluding raw API key)
+        socket.emit('sync:init', getPublicState(masterState));
 
         // Log streaming for redeploy
         let logTailProcess = null;
@@ -459,7 +464,7 @@ app.prepare().then(() => {
                 masterState.version = newState.version;
                 masterState.lastModified = newState.lastModified || Date.now();
                 saveData(masterState);
-                socket.broadcast.emit('sync:broadcast', masterState);
+                socket.broadcast.emit('sync:broadcast', getPublicState(masterState));
             }
         });
 
@@ -974,15 +979,54 @@ app.prepare().then(() => {
         ];
     }
 
+    // --- AI Key Configuration Endpoints ---
+    expressApp.get('/api/config/gemini', (req, res) => {
+        const key = masterState.geminiApiKey || process.env.GEMINI_API_KEY || '';
+        const source = masterState.geminiApiKey ? 'ui' : (process.env.GEMINI_API_KEY ? 'env' : 'none');
+        const masked = key.length > 8 ? `${key.slice(0, 4)}••••${key.slice(-4)}` : (key ? '••••••••' : '');
+        res.json({
+            configured: Boolean(key),
+            source,
+            masked,
+            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+        });
+    });
+
+    expressApp.post('/api/config/gemini', (req, res) => {
+        const { apiKey } = req.body;
+        if (typeof apiKey !== 'string') {
+            return res.status(400).json({ error: 'apiKey must be a string' });
+        }
+        const trimmed = apiKey.trim();
+        if (trimmed) {
+            masterState.geminiApiKey = trimmed;
+        } else {
+            delete masterState.geminiApiKey;
+        }
+        saveData(masterState);
+
+        const activeKey = masterState.geminiApiKey || process.env.GEMINI_API_KEY || '';
+        const source = masterState.geminiApiKey ? 'ui' : (process.env.GEMINI_API_KEY ? 'env' : 'none');
+        const masked = activeKey.length > 8 ? `${activeKey.slice(0, 4)}••••${activeKey.slice(-4)}` : (activeKey ? '••••••••' : '');
+
+        res.json({
+            success: true,
+            configured: Boolean(activeKey),
+            source,
+            masked,
+            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+        });
+    });
+
     expressApp.post('/api/tasks/decompose', async (req, res) => {
-        const { title } = req.body;
+        const { title, apiKey: clientKey } = req.body;
         if (!title || typeof title !== 'string' || !title.trim()) {
             return res.status(400).json({ error: 'title is required' });
         }
         const goal = title.trim();
 
-        // 1. Try Gemini API if key is present
-        const geminiKey = process.env.GEMINI_API_KEY;
+        // 1. Try Gemini API if key is present (UI/server config -> client override -> .env)
+        const geminiKey = (typeof clientKey === 'string' && clientKey.trim()) || masterState.geminiApiKey || process.env.GEMINI_API_KEY;
         const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
         if (geminiKey) {
             try {
