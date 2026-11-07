@@ -28,6 +28,14 @@ interface GeminiConfig {
     keyError?: string | null;
 }
 
+interface McpOAuthConfig {
+    enabled: boolean;
+    clientId: string;
+    clientSecret: string;
+    passkey: string;
+    activeTokens: number;
+}
+
 export function PrinterStatusBar() {
     const [status, setStatus] = useState<PrinterStatus | null>(null);
     const [queueLength, setQueueLength] = useState(0);
@@ -39,6 +47,8 @@ export function PrinterStatusBar() {
     const [apiKeyInput, setApiKeyInput] = useState('');
     const [showKey, setShowKey] = useState(false);
     const [savingKey, setSavingKey] = useState(false);
+    const [mcpOAuth, setMcpOAuth] = useState<McpOAuthConfig | null>(null);
+    const [showMcpPasskey, setShowMcpPasskey] = useState(false);
     const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
 
     const autoPrintEnabled = useTaskStore((state) => state.autoPrintEnabled);
@@ -81,9 +91,40 @@ export function PrinterStatusBar() {
         }
     };
 
+    const fetchMcpOAuth = async () => {
+        try {
+            const res = await fetch('/api/config/mcp-oauth');
+            if (res.ok) {
+                const data = await res.json();
+                setMcpOAuth(data);
+            }
+        } catch {
+            // ignore
+        }
+    };
+
+    const handleToggleMcpOAuth = async () => {
+        if (!mcpOAuth) return;
+        try {
+            const res = await fetch('/api/config/mcp-oauth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: !mcpOAuth.enabled })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setMcpOAuth(data);
+                toast.success(data.enabled ? 'MCP OAuth 2.1 protection enabled' : 'MCP OAuth protection disabled');
+            }
+        } catch {
+            toast.error('Failed to update MCP OAuth setting');
+        }
+    };
+
     useEffect(() => {
         if (isOpen) {
             fetchGeminiConfig(true);
+            fetchMcpOAuth();
         }
     }, [isOpen]);
 
@@ -385,30 +426,80 @@ export function PrinterStatusBar() {
                             </div>
                         </div>
 
-                        {/* Gemini MCP Server Link */}
-                        <div className="pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800 mb-3">
-                            <div className="flex items-center justify-between mb-1 px-1">
+                        {/* Gemini MCP Server Link & OAuth 2.1 Security */}
+                        <div className="pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800 mb-3 space-y-1.5">
+                            <div className="flex items-center justify-between px-1">
                                 <div className="flex items-center gap-1.5">
                                     <Terminal size={12} className="text-emerald-500" />
                                     <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-600 dark:text-zinc-400">Gemini MCP URL</span>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        const mcpUrl = 'https://print.nebulous.space/mcp';
-                                        navigator.clipboard.writeText(mcpUrl);
-                                        toast.success('Copied MCP Server URL!');
-                                    }}
-                                    className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center gap-1 transition-colors"
-                                    title="Copy MCP URL for Gemini Connected Apps"
-                                >
-                                    <Copy size={10} />
-                                    <span>COPY</span>
-                                </button>
+                                <div className="flex items-center gap-1">
+                                    {mcpOAuth && (
+                                        <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={mcpOAuth.enabled}
+                                            onClick={handleToggleMcpOAuth}
+                                            className={cn(
+                                                "text-[9px] font-bold px-1.5 py-0.5 rounded transition-colors",
+                                                mcpOAuth.enabled
+                                                    ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400"
+                                                    : "bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
+                                            )}
+                                            title="Toggle OAuth 2.1 protection on /mcp"
+                                        >
+                                            {mcpOAuth.enabled ? 'OAUTH ON' : 'OAUTH OFF'}
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const mcpUrl = 'https://print.nebulous.space/mcp';
+                                            navigator.clipboard.writeText(mcpUrl);
+                                            toast.success('Copied MCP Server URL!');
+                                        }}
+                                        className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center gap-1 transition-colors"
+                                        title="Copy MCP URL for Gemini Connected Apps"
+                                    >
+                                        <Copy size={10} />
+                                        <span>COPY</span>
+                                    </button>
+                                </div>
                             </div>
                             <div className="px-2 py-1 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded text-[10px] text-zinc-600 dark:text-zinc-400 truncate select-all">
                                 https://print.nebulous.space/mcp
                             </div>
+                            {mcpOAuth?.enabled && (
+                                <div className="flex items-center justify-between px-2 py-1 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded text-[10px]">
+                                    <span className="text-zinc-500 dark:text-zinc-400">OAuth Passkey:</span>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="font-mono text-zinc-800 dark:text-zinc-200">
+                                            {showMcpPasskey ? mcpOAuth.passkey : '••••••••••••'}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            aria-label={showMcpPasskey ? 'Hide MCP passkey' : 'Show MCP passkey'}
+                                            onClick={() => setShowMcpPasskey(!showMcpPasskey)}
+                                            className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                                            title={showMcpPasskey ? 'Hide passkey' : 'Show passkey'}
+                                        >
+                                            {showMcpPasskey ? <EyeOff size={11} /> : <Eye size={11} />}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            aria-label="Copy MCP passkey"
+                                            onClick={() => {
+                                                navigator.clipboard.writeText(mcpOAuth.passkey);
+                                                toast.success('Copied MCP OAuth Passkey!');
+                                            }}
+                                            className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                                            title="Copy OAuth Passkey"
+                                        >
+                                            <Copy size={11} />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         {/* Install PWA Button (if installable) */}

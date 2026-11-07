@@ -9,6 +9,7 @@ const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const cron = require('node-cron');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 // escpos removed (moved to standalone print-server.js)
 
@@ -387,10 +388,11 @@ app.prepare().then(() => {
 
     expressApp.use(cors());
     expressApp.use(bodyParser.json());
+    expressApp.use(bodyParser.urlencoded({ extended: true }));
 
     // --- Socket.IO Sync ---
     function getPublicState(state) {
-        const { geminiApiKey, ...publicState } = state;
+        const { geminiApiKey, mcpOAuth, ...publicState } = state;
         return publicState;
     }
 
@@ -1355,10 +1357,487 @@ app.prepare().then(() => {
         }
     }
 
+    // --- MCP OAuth 2.1 Provider (RFC 9728, RFC 8414, RFC 7591, PKCE S256) ---
+    function ensureMcpOAuthState() {
+        if (!masterState.mcpOAuth) {
+            masterState.mcpOAuth = {
+                enabled: true,
+                clientId: 'thermalflow-mcp',
+                clientSecret: 'tf_mcp_' + crypto.randomBytes(12).toString('hex'),
+                passkey: process.env.MCP_PASSKEY || process.env.REDEPLOY_KEY || 'tf_redeploy_secret_8429',
+                tokens: {},
+                clients: {}
+            };
+            saveData(masterState);
+        } else {
+            if (masterState.mcpOAuth.enabled === undefined) masterState.mcpOAuth.enabled = true;
+            if (!masterState.mcpOAuth.clientId) masterState.mcpOAuth.clientId = 'thermalflow-mcp';
+            if (!masterState.mcpOAuth.clientSecret) masterState.mcpOAuth.clientSecret = 'tf_mcp_' + crypto.randomBytes(12).toString('hex');
+            if (!masterState.mcpOAuth.passkey) masterState.mcpOAuth.passkey = process.env.MCP_PASSKEY || process.env.REDEPLOY_KEY || 'tf_redeploy_secret_8429';
+            if (!masterState.mcpOAuth.tokens) masterState.mcpOAuth.tokens = {};
+            if (!masterState.mcpOAuth.clients) masterState.mcpOAuth.clients = {};
+        }
+        return masterState.mcpOAuth;
+    }
+
+    const oauthAuthCodes = new Map(); // code -> { clientId, redirectUri, codeChallenge, codeChallengeMethod, scope, resource, expiresAt }
+
+    function getRequestOrigin(req) {
+        const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+        const forwardedHost = (req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+        const host = forwardedHost || req.headers.host || 'print.nebulous.space';
+        const proto = forwardedProto || (host.includes('localhost') || host.startsWith('127.') || host.startsWith('192.168.') ? 'http' : 'https');
+        return `${proto}://${host}`;
+    }
+
+    function verifyMcpBearer(req) {
+        const oauth = ensureMcpOAuthState();
+        if (!oauth.enabled) return true;
+
+        const authHeader = req.headers.authorization || '';
+        const queryToken = req.query.access_token || req.query.token || '';
+        let token = '';
+        if (authHeader.toLowerCase().startsWith('bearer ')) {
+            token = authHeader.slice(7).trim();
+        } else if (typeof queryToken === 'string' && queryToken.trim()) {
+            token = queryToken.trim();
+        }
+
+        if (!token) return false;
+        if (token === oauth.clientSecret || token === oauth.passkey) return true;
+
+        const record = oauth.tokens[token];
+        if (!record) return false;
+        if (record.expiresAt && Date.now() > record.expiresAt) {
+            delete oauth.tokens[token];
+            saveData(masterState);
+            return false;
+        }
+        return true;
+    }
+
+    function sendMcpUnauthorized(req, res) {
+        const origin = getRequestOrigin(req);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate');
+        res.setHeader(
+            'WWW-Authenticate',
+            `Bearer realm="thermalflow-mcp", resource_metadata="${origin}/.well-known/oauth-protected-resource"`
+        );
+        return res.status(401).json({
+            error: 'unauthorized',
+            error_description: 'OAuth 2.1 Bearer token required. Discover metadata at /.well-known/oauth-protected-resource'
+        });
+    }
+
+    // 1. Protected Resource Metadata (RFC 9728)
+    const handleProtectedResourceMeta = (req, res) => {
+        const origin = getRequestOrigin(req);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.json({
+            resource: `${origin}/mcp`,
+            authorization_servers: [origin],
+            bearer_methods_supported: ['header'],
+            scopes_supported: ['mcp:tools']
+        });
+    };
+    expressApp.get('/.well-known/oauth-protected-resource', handleProtectedResourceMeta);
+    expressApp.get('/.well-known/oauth-protected-resource/mcp', handleProtectedResourceMeta);
+
+    // 2. Authorization Server Metadata (RFC 8414 & OIDC Discovery)
+    const handleAuthServerMeta = (req, res) => {
+        const origin = getRequestOrigin(req);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.json({
+            issuer: origin,
+            authorization_endpoint: `${origin}/oauth/authorize`,
+            token_endpoint: `${origin}/oauth/token`,
+            registration_endpoint: `${origin}/oauth/register`,
+            response_types_supported: ['code'],
+            grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
+            token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+            code_challenge_methods_supported: ['S256', 'plain'],
+            scopes_supported: ['mcp:tools', 'openid', 'profile']
+        });
+    };
+    expressApp.get('/.well-known/oauth-authorization-server', handleAuthServerMeta);
+    expressApp.get('/.well-known/openid-configuration', handleAuthServerMeta);
+
+    // 3. Dynamic Client Registration (RFC 7591)
+    expressApp.post('/oauth/register', (req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        const oauth = ensureMcpOAuthState();
+        const body = req.body || {};
+        const clientId = 'tf_client_' + crypto.randomBytes(8).toString('hex');
+        const clientSecret = 'tf_sec_' + crypto.randomBytes(16).toString('hex');
+        const nowSec = Math.floor(Date.now() / 1000);
+
+        const clientRecord = {
+            client_id: clientId,
+            client_secret: clientSecret,
+            client_id_issued_at: nowSec,
+            client_secret_expires_at: 0,
+            client_name: body.client_name || 'MCP Client',
+            redirect_uris: Array.isArray(body.redirect_uris) ? body.redirect_uris : [],
+            grant_types: body.grant_types || ['authorization_code', 'refresh_token'],
+            response_types: body.response_types || ['code'],
+            token_endpoint_auth_method: body.token_endpoint_auth_method || 'none'
+        };
+
+        oauth.clients[clientId] = clientRecord;
+        saveData(masterState);
+        res.status(201).json(clientRecord);
+    });
+
+    // 4. OAuth 2.1 Authorization Consent Screen (GET & POST /oauth/authorize)
+    function renderAuthorizePage(params, errorMsg = '') {
+        const escapeHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Authorize ThermalFlow MCP</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background: #09090b;
+            color: #f4f4f5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .card {
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 20px;
+            max-width: 420px;
+            width: 100%;
+            padding: 32px 26px;
+            box-shadow: 0 25px 60px rgba(0,0,0,0.75);
+        }
+        .badge {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            margin-bottom: 14px;
+        }
+        h1 { font-size: 20px; margin: 0 0 8px 0; }
+        p { color: #a1a1aa; font-size: 12px; line-height: 1.5; margin: 0 0 20px 0; }
+        .scopes {
+            background: #09090b;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin-bottom: 20px;
+            font-size: 11px;
+            color: #d4d4d8;
+        }
+        .scopes div { margin: 4px 0; }
+        label {
+            display: block;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #a1a1aa;
+            margin-bottom: 6px;
+        }
+        input[type="password"] {
+            width: 100%;
+            background: #09090b;
+            border: 1px solid #3f3f46;
+            color: #f4f4f5;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-family: inherit;
+            font-size: 13px;
+            margin-bottom: 16px;
+            outline: none;
+        }
+        input[type="password"]:focus { border-color: #10b981; }
+        .error {
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            color: #fca5a5;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-bottom: 16px;
+        }
+        .actions { display: flex; gap: 10px; }
+        button {
+            flex: 1;
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+        }
+        .btn-approve {
+            background: #10b981;
+            color: #052e16;
+        }
+        .btn-approve:hover { background: #34d399; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <span class="badge">OAuth 2.1 Security</span>
+        <h1>Connect to ThermalFlow MCP</h1>
+        <p>An AI client (<strong>${escapeHtml(params.client_id || 'Gemini Connected App')}</strong>) is requesting permission to manage and print tasks on your ThermalFlow board.</p>
+        <div class="scopes">
+            <div>&#10003; View &amp; search tasks (<code>list_tasks</code>)</div>
+            <div>&#10003; Add &amp; auto-print tasks (<code>add_task</code>)</div>
+            <div>&#10003; Complete &amp; print receipts (<code>complete_task</code>, <code>print_tasks</code>)</div>
+        </div>
+        ${errorMsg ? `<div class="error">${escapeHtml(errorMsg)}</div>` : ''}
+        <form method="POST" action="/oauth/authorize">
+            <input type="hidden" name="client_id" value="${escapeHtml(params.client_id)}" />
+            <input type="hidden" name="redirect_uri" value="${escapeHtml(params.redirect_uri)}" />
+            <input type="hidden" name="response_type" value="${escapeHtml(params.response_type || 'code')}" />
+            <input type="hidden" name="state" value="${escapeHtml(params.state)}" />
+            <input type="hidden" name="code_challenge" value="${escapeHtml(params.code_challenge)}" />
+            <input type="hidden" name="code_challenge_method" value="${escapeHtml(params.code_challenge_method || 'S256')}" />
+            <input type="hidden" name="scope" value="${escapeHtml(params.scope || 'mcp:tools')}" />
+            <input type="hidden" name="resource" value="${escapeHtml(params.resource)}" />
+            <label for="passkey">ThermalFlow MCP Passkey</label>
+            <input id="passkey" name="passkey" type="password" placeholder="Enter MCP Passkey (from Printer Ready menu)" required autofocus />
+            <div class="actions">
+                <button type="submit" class="btn-approve">AUTHORIZE ACCESS &rarr;</button>
+            </div>
+        </form>
+    </div>
+</body>
+</html>`;
+    }
+
+    expressApp.get('/oauth/authorize', (req, res) => {
+        res.status(200).send(renderAuthorizePage(req.query));
+    });
+
+    expressApp.post('/oauth/authorize', (req, res) => {
+        const oauth = ensureMcpOAuthState();
+        const params = { ...req.query, ...req.body };
+        const submittedPasskey = (params.passkey || '').trim();
+
+        if (!submittedPasskey || (submittedPasskey !== oauth.passkey && submittedPasskey !== oauth.clientSecret)) {
+            return res.status(401).send(renderAuthorizePage(params, 'Invalid MCP Passkey. Check the passkey in your ThermalFlow Printer Ready menu.'));
+        }
+
+        const code = 'tf_code_' + crypto.randomBytes(18).toString('hex');
+        oauthAuthCodes.set(code, {
+            clientId: params.client_id || 'thermalflow-mcp',
+            redirectUri: params.redirect_uri || '',
+            codeChallenge: params.code_challenge || '',
+            codeChallengeMethod: params.code_challenge_method || 'S256',
+            scope: params.scope || 'mcp:tools',
+            resource: params.resource || '',
+            expiresAt: Date.now() + 10 * 60 * 1000
+        });
+
+        if (!params.redirect_uri) {
+            return res.json({ code, state: params.state });
+        }
+
+        try {
+            const redirectUrl = new URL(params.redirect_uri);
+            redirectUrl.searchParams.set('code', code);
+            if (params.state) {
+                redirectUrl.searchParams.set('state', params.state);
+            }
+            return res.redirect(302, redirectUrl.toString());
+        } catch {
+            const sep = params.redirect_uri.includes('?') ? '&' : '?';
+            const stateParam = params.state ? `&state=${encodeURIComponent(params.state)}` : '';
+            return res.redirect(302, `${params.redirect_uri}${sep}code=${encodeURIComponent(code)}${stateParam}`);
+        }
+    });
+
+    // 5. OAuth 2.1 Token Endpoint (POST /oauth/token)
+    expressApp.post('/oauth/token', (req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        const oauth = ensureMcpOAuthState();
+        const body = req.body || {};
+        const grantType = body.grant_type || 'authorization_code';
+
+        if (grantType === 'authorization_code') {
+            const code = body.code;
+            const record = oauthAuthCodes.get(code);
+            if (!record || Date.now() > record.expiresAt) {
+                oauthAuthCodes.delete(code);
+                return res.status(400).json({ error: 'invalid_grant', error_description: 'Authorization code is invalid or expired.' });
+            }
+            oauthAuthCodes.delete(code);
+
+            // Verify PKCE if codeChallenge was provided during authorization
+            if (record.codeChallenge) {
+                const verifier = body.code_verifier || '';
+                if (!verifier) {
+                    return res.status(400).json({ error: 'invalid_grant', error_description: 'Missing PKCE code_verifier.' });
+                }
+                if ((record.codeChallengeMethod || 'S256').toUpperCase() === 'S256') {
+                    const computed = crypto.createHash('sha256').update(verifier).digest('base64url');
+                    if (computed !== record.codeChallenge) {
+                        return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE S256 verification failed.' });
+                    }
+                } else if (verifier !== record.codeChallenge) {
+                    return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE plain verification failed.' });
+                }
+            }
+
+            const accessToken = 'tf_at_' + crypto.randomBytes(24).toString('hex');
+            const refreshToken = 'tf_rt_' + crypto.randomBytes(24).toString('hex');
+            const expiresIn = 30 * 24 * 3600; // 30 days
+            const now = Date.now();
+
+            oauth.tokens[accessToken] = {
+                type: 'access',
+                clientId: record.clientId,
+                scope: record.scope || 'mcp:tools',
+                createdAt: now,
+                expiresAt: now + expiresIn * 1000
+            };
+            oauth.tokens[refreshToken] = {
+                type: 'refresh',
+                clientId: record.clientId,
+                scope: record.scope || 'mcp:tools',
+                createdAt: now
+            };
+            saveData(masterState);
+
+            return res.json({
+                access_token: accessToken,
+                token_type: 'Bearer',
+                expires_in: expiresIn,
+                refresh_token: refreshToken,
+                scope: record.scope || 'mcp:tools'
+            });
+        }
+
+        if (grantType === 'refresh_token') {
+            const refreshToken = body.refresh_token;
+            const record = oauth.tokens[refreshToken];
+            if (!record || record.type !== 'refresh') {
+                return res.status(400).json({ error: 'invalid_grant', error_description: 'Invalid refresh token.' });
+            }
+
+            const accessToken = 'tf_at_' + crypto.randomBytes(24).toString('hex');
+            const expiresIn = 30 * 24 * 3600;
+            oauth.tokens[accessToken] = {
+                type: 'access',
+                clientId: record.clientId,
+                scope: record.scope || 'mcp:tools',
+                createdAt: Date.now(),
+                expiresAt: Date.now() + expiresIn * 1000
+            };
+            saveData(masterState);
+
+            return res.json({
+                access_token: accessToken,
+                token_type: 'Bearer',
+                expires_in: expiresIn,
+                refresh_token: refreshToken,
+                scope: record.scope || 'mcp:tools'
+            });
+        }
+
+        if (grantType === 'client_credentials') {
+            let clientSecret = body.client_secret || '';
+            const authHeader = req.headers.authorization || '';
+            if (authHeader.toLowerCase().startsWith('basic ')) {
+                const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8');
+                const parts = decoded.split(':');
+                if (parts.length >= 2) clientSecret = parts.slice(1).join(':');
+            }
+            if (clientSecret !== oauth.clientSecret && clientSecret !== oauth.passkey) {
+                return res.status(401).json({ error: 'invalid_client', error_description: 'Invalid client_secret.' });
+            }
+
+            const accessToken = 'tf_at_' + crypto.randomBytes(24).toString('hex');
+            const expiresIn = 30 * 24 * 3600;
+            oauth.tokens[accessToken] = {
+                type: 'access',
+                clientId: body.client_id || oauth.clientId,
+                scope: 'mcp:tools',
+                createdAt: Date.now(),
+                expiresAt: Date.now() + expiresIn * 1000
+            };
+            saveData(masterState);
+
+            return res.json({
+                access_token: accessToken,
+                token_type: 'Bearer',
+                expires_in: expiresIn,
+                scope: 'mcp:tools'
+            });
+        }
+
+        return res.status(400).json({ error: 'unsupported_grant_type' });
+    });
+
+    // 6. UI Configuration Endpoint for MCP OAuth (/api/config/mcp-oauth)
+    expressApp.get('/api/config/mcp-oauth', (req, res) => {
+        const oauth = ensureMcpOAuthState();
+        const activeTokens = Object.values(oauth.tokens || {}).filter(t => t.type === 'access' && (!t.expiresAt || t.expiresAt > Date.now())).length;
+        res.json({
+            enabled: Boolean(oauth.enabled),
+            clientId: oauth.clientId,
+            clientSecret: oauth.clientSecret,
+            passkey: oauth.passkey,
+            activeTokens
+        });
+    });
+
+    expressApp.post('/api/config/mcp-oauth', (req, res) => {
+        const oauth = ensureMcpOAuthState();
+        const { enabled, passkey, regenerateSecret, revokeTokens } = req.body || {};
+
+        if (typeof enabled === 'boolean') {
+            oauth.enabled = enabled;
+        }
+        if (typeof passkey === 'string' && passkey.trim()) {
+            oauth.passkey = passkey.trim();
+        }
+        if (regenerateSecret) {
+            oauth.clientSecret = 'tf_mcp_' + crypto.randomBytes(12).toString('hex');
+        }
+        if (revokeTokens) {
+            oauth.tokens = {};
+        }
+        saveData(masterState);
+
+        const activeTokens = Object.values(oauth.tokens || {}).filter(t => t.type === 'access' && (!t.expiresAt || t.expiresAt > Date.now())).length;
+        res.json({
+            success: true,
+            enabled: Boolean(oauth.enabled),
+            clientId: oauth.clientId,
+            clientSecret: oauth.clientSecret,
+            passkey: oauth.passkey,
+            activeTokens
+        });
+    });
+
     const mcpSseSessions = new Map();
 
-    // Streamable HTTP + SSE endpoint at /mcp
+    // Streamable HTTP + SSE endpoint at /mcp (protected by OAuth 2.1 when enabled)
     expressApp.get('/mcp', (req, res) => {
+        if (!verifyMcpBearer(req)) {
+            return sendMcpUnauthorized(req, res);
+        }
         const accept = req.headers.accept || '';
         if (accept.includes('text/event-stream')) {
             const sessionId = Math.random().toString(36).substring(2, 12);
@@ -1377,12 +1856,16 @@ app.prepare().then(() => {
             name: 'thermalflow-mcp',
             version: '1.0.0',
             status: 'ok',
+            oauthProtected: Boolean(ensureMcpOAuthState().enabled),
             transport: ['streamable-http', 'sse'],
             tools: MCP_TOOLS.map(t => t.name)
         });
     });
 
     expressApp.post('/mcp', async (req, res) => {
+        if (!verifyMcpBearer(req)) {
+            return sendMcpUnauthorized(req, res);
+        }
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
         const sessionId = req.query.sessionId;
@@ -1420,6 +1903,9 @@ app.prepare().then(() => {
     });
 
     expressApp.delete('/mcp', (req, res) => {
+        if (!verifyMcpBearer(req)) {
+            return sendMcpUnauthorized(req, res);
+        }
         res.status(200).json({ ok: true });
     });
 

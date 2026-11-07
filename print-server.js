@@ -77,6 +77,7 @@ const limiter = rateLimit({
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(limiter);
 
 
@@ -825,14 +826,125 @@ function performBarcodePrint(data, format, title) {
     });
 }
 
-// --- Proxy /mcp to main server (port 3000) so https://print.nebulous.space/mcp works directly ---
+// --- Proxy /mcp, /.well-known/*, and /oauth/* to main server (port 3000) ---
 const MAIN_SERVER_BASE = process.env.MAIN_SERVER_BASE || 'http://localhost:3000';
+
+function buildForwardHeaders(req, extra = {}) {
+    const headers = {
+        'X-Forwarded-Proto': req.headers['x-forwarded-proto'] || req.protocol || 'https',
+        'X-Forwarded-Host': req.headers['x-forwarded-host'] || req.headers.host || 'print.nebulous.space',
+        ...extra
+    };
+    if (req.headers.authorization) {
+        headers['Authorization'] = req.headers.authorization;
+    }
+    if (req.headers.accept) {
+        headers['Accept'] = req.headers.accept;
+    }
+    return headers;
+}
+
+const wellKnownPaths = [
+    '/.well-known/oauth-protected-resource',
+    '/.well-known/oauth-protected-resource/mcp',
+    '/.well-known/oauth-authorization-server',
+    '/.well-known/openid-configuration'
+];
+
+wellKnownPaths.forEach((wkPath) => {
+    app.get(wkPath, async (req, res) => {
+        try {
+            const response = await fetch(`${MAIN_SERVER_BASE}${wkPath}`, {
+                headers: buildForwardHeaders(req)
+            });
+            const data = await response.json();
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.status(response.status).json(data);
+        } catch (err) {
+            res.status(502).json({ error: 'Main ThermalFlow server unreachable', details: err.message });
+        }
+    });
+});
+
+app.post('/oauth/register', async (req, res) => {
+    try {
+        const response = await fetch(`${MAIN_SERVER_BASE}/oauth/register`, {
+            method: 'POST',
+            headers: buildForwardHeaders(req, { 'Content-Type': 'application/json' }),
+            body: JSON.stringify(req.body || {})
+        });
+        const data = await response.json();
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.status(response.status).json(data);
+    } catch (err) {
+        res.status(502).json({ error: 'Main ThermalFlow server unreachable', details: err.message });
+    }
+});
+
+app.get('/oauth/authorize', async (req, res) => {
+    try {
+        const qs = new URLSearchParams(req.query).toString();
+        const response = await fetch(`${MAIN_SERVER_BASE}/oauth/authorize${qs ? `?${qs}` : ''}`, {
+            headers: buildForwardHeaders(req),
+            redirect: 'manual'
+        });
+        const location = response.headers.get('location');
+        if (location && (response.status === 301 || response.status === 302)) {
+            return res.redirect(response.status, location);
+        }
+        const html = await response.text();
+        res.status(response.status).setHeader('Content-Type', 'text/html; charset=utf-8').send(html);
+    } catch (err) {
+        res.status(502).send(`Main server unreachable: ${err.message}`);
+    }
+});
+
+app.post('/oauth/authorize', async (req, res) => {
+    try {
+        const response = await fetch(`${MAIN_SERVER_BASE}/oauth/authorize`, {
+            method: 'POST',
+            headers: buildForwardHeaders(req, { 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ ...req.query, ...req.body }),
+            redirect: 'manual'
+        });
+        const location = response.headers.get('location');
+        if (location && (response.status === 301 || response.status === 302)) {
+            return res.redirect(response.status, location);
+        }
+        const contentType = response.headers.get('content-type') || 'text/html; charset=utf-8';
+        const bodyText = await response.text();
+        res.status(response.status).setHeader('Content-Type', contentType).send(bodyText);
+    } catch (err) {
+        res.status(502).send(`Main server unreachable: ${err.message}`);
+    }
+});
+
+app.post('/oauth/token', async (req, res) => {
+    try {
+        const response = await fetch(`${MAIN_SERVER_BASE}/oauth/token`, {
+            method: 'POST',
+            headers: buildForwardHeaders(req, { 'Content-Type': 'application/json' }),
+            body: JSON.stringify(req.body || {})
+        });
+        const data = await response.json();
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.status(response.status).json(data);
+    } catch (err) {
+        res.status(502).json({ error: 'server_error', error_description: err.message });
+    }
+});
 
 app.get('/mcp', async (req, res) => {
     try {
-        const response = await fetch(`${MAIN_SERVER_BASE}/mcp`, {
-            headers: { 'Accept': req.headers.accept || 'application/json' }
+        const qs = new URLSearchParams(req.query).toString();
+        const response = await fetch(`${MAIN_SERVER_BASE}/mcp${qs ? `?${qs}` : ''}`, {
+            headers: buildForwardHeaders(req)
         });
+        const wwwAuth = response.headers.get('www-authenticate');
+        if (wwwAuth) {
+            res.setHeader('WWW-Authenticate', wwwAuth);
+            res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate');
+        }
         const data = await response.json();
         res.status(response.status).json(data);
     } catch (err) {
@@ -844,11 +956,17 @@ app.post('/mcp', async (req, res) => {
     try {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
-        const response = await fetch(`${MAIN_SERVER_BASE}/mcp`, {
+        const qs = new URLSearchParams(req.query).toString();
+        const response = await fetch(`${MAIN_SERVER_BASE}/mcp${qs ? `?${qs}` : ''}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: buildForwardHeaders(req, { 'Content-Type': 'application/json' }),
             body: JSON.stringify(req.body)
         });
+        const wwwAuth = response.headers.get('www-authenticate');
+        if (wwwAuth) {
+            res.setHeader('WWW-Authenticate', wwwAuth);
+            res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate');
+        }
         if (response.status === 202) {
             return res.status(202).end();
         }
@@ -866,8 +984,22 @@ app.options('/mcp', (req, res) => {
     res.status(204).end();
 });
 
-app.delete('/mcp', (req, res) => {
-    res.status(200).json({ ok: true });
+app.delete('/mcp', async (req, res) => {
+    try {
+        const response = await fetch(`${MAIN_SERVER_BASE}/mcp`, {
+            method: 'DELETE',
+            headers: buildForwardHeaders(req)
+        });
+        const wwwAuth = response.headers.get('www-authenticate');
+        if (wwwAuth) {
+            res.setHeader('WWW-Authenticate', wwwAuth);
+            res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate');
+        }
+        const data = await response.json().catch(() => ({ ok: true }));
+        res.status(response.status).json(data);
+    } catch (err) {
+        res.status(502).json({ error: err.message });
+    }
 });
 
 // --- Initialize ---
