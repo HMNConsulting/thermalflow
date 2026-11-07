@@ -507,8 +507,19 @@ function performSinglePrint(taskName, options = {}) {
 function performActionPlanPrint(goalTitle, subtasks) {
     return new Promise((resolve, reject) => {
         try {
-            const device = new escpos.USB(PRINTER_VID, PRINTER_PID);
-            const printer = new escpos.Printer(device, { encoding: 'ASCII' });
+            let device;
+            const printers = escpos.USB.findPrinter();
+            if (printers && printers.length > 0) {
+                const target = printers.find(p =>
+                    p.deviceDescriptor.idVendor === 0x4b8 &&
+                    p.deviceDescriptor.idProduct === 0xe28
+                );
+                device = new escpos.USB(target || printers[0]);
+            } else {
+                device = new escpos.USB(0x4b8, 0xe28);
+            }
+
+            const printer = new escpos.Printer(device, { encoding: 'ascii' });
 
             device.open(async (error) => {
                 if (error) {
@@ -517,9 +528,9 @@ function performActionPlanPrint(goalTitle, subtasks) {
                 }
 
                 try {
-                    printer.align('ct').style('b').size(1, 1).text('ACTION PLAN').size(0, 0).style('normal');
+                    printer.font('a').align('ct').style('b').size(1, 1).text('ACTION PLAN').size(0, 0).style('normal');
                     printer.text('================================');
-                    printer.style('b').text(sanitizeAscii(goalTitle.toUpperCase())).style('normal');
+                    printer.style('b').text(sanitizeText(goalTitle.toUpperCase())).style('normal');
                     printer.text(new Date().toLocaleString());
                     printer.text('--------------------------------');
 
@@ -529,18 +540,24 @@ function performActionPlanPrint(goalTitle, subtasks) {
                         const qrUrl = typeof item === 'object' ? item.qrUrl : null;
 
                         printer.align('lt').style('b').text(`[ ] STEP ${i + 1}:`).style('normal');
-                        printer.text(`    ${sanitizeAscii(stepText)}`);
+                        printer.text(`    ${sanitizeText(stepText)}`);
 
                         if (qrUrl) {
                             try {
                                 const qrBuffer = await QRCode.toBuffer(qrUrl, {
                                     type: 'png',
                                     width: 120,
-                                    margin: 1
+                                    margin: 1,
+                                    color: { dark: '#000000', light: '#FFFFFF' }
                                 });
-                                const image = await escpos.Image.load(qrBuffer, 'image/png');
-                                printer.align('ct').image(image, 's8');
-                                printer.align('ct').text('SCAN TO COMPLETE');
+                                await new Promise((resQr) => {
+                                    escpos.Image.load(qrBuffer, 'image/png', function (img) {
+                                        if (img) {
+                                            printer.feed(1).align('ct').raster(img).size(0, 0).text('SCAN TO COMPLETE');
+                                        }
+                                        resQr();
+                                    });
+                                });
                             } catch (qrErr) {
                                 logger.warn("Step QR generation failed:", qrErr.message);
                             }

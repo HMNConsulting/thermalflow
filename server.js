@@ -540,6 +540,21 @@ app.prepare().then(() => {
         }
     });
 
+    expressApp.post('/api/print-action-plan', async (req, res) => {
+        try {
+            const response = await fetch(`${PRINT_SERVER_BASE}/print-action-plan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(req.body)
+            });
+            const data = await response.json();
+            res.status(response.status).json(data);
+        } catch (error) {
+            console.error('Print proxy error (/api/print-action-plan):', error);
+            res.status(502).json({ error: 'Could not connect to print server' });
+        }
+    });
+
     // --- New Print Server Endpoints ---
 
     expressApp.post('/api/print-qr', async (req, res) => {
@@ -1412,13 +1427,40 @@ app.prepare().then(() => {
     function generateHeuristicSubtasks(goal) {
         const lower = goal.toLowerCase();
 
-        if (lower.includes('fix') || lower.includes('repair') || lower.includes('replace') || lower.includes('spring') || lower.includes('door') || lower.includes('leak') || lower.includes('car') || lower.includes('bike')) {
+        if (lower.includes('smog') || lower.includes('emissions') || lower.includes('inspection')) {
+            return [
+                `Check OBD2 readiness monitors & CEL light`,
+                `Locate DMV renewal notice & registration`,
+                `Warm up engine with 15-min highway drive`,
+                `Take ${goal.slice(0, 18)} to STAR smog station`,
+                `Verify electronic DMV certificate & pay fee`
+            ];
+        }
+        if (lower.includes('truck') || lower.includes('car') || lower.includes('vehicle') || lower.includes('brake') || lower.includes('ball joint') || lower.includes('oil') || lower.includes('tire')) {
+            return [
+                `Inspect vehicle & confirm part numbers`,
+                `Order OEM/aftermarket parts & tools`,
+                `Chock wheels, jack vehicle & set stands`,
+                `Remove worn components & torque new parts`,
+                `Road test vehicle & check alignment/leaks`
+            ];
+        }
+        if (lower.includes('fix') || lower.includes('repair') || lower.includes('replace') || lower.includes('spring') || lower.includes('door') || lower.includes('leak') || lower.includes('roof') || lower.includes('bike')) {
             return [
                 `Inspect & diagnose root cause`,
                 `Identify & source replacement parts`,
                 `Disconnect power & secure work area`,
                 `Remove worn parts & install new units`,
-                `Test complete cycle & lubricate moving parts`
+                `Test complete cycle & clean up work area`
+            ];
+        }
+        if (lower.includes('quote') || lower.includes('contractor') || lower.includes('estimate')) {
+            return [
+                `Document scope & take reference photos`,
+                `Contact 3 licensed local contractors`,
+                `Schedule on-site inspection walkthroughs`,
+                `Compare written itemized estimates & warranty`,
+                `Select vendor & confirm start date`
             ];
         }
         if (lower.includes('buy') || lower.includes('shop') || lower.includes('purchase') || lower.includes('order')) {
@@ -1448,13 +1490,13 @@ app.prepare().then(() => {
                 `Review emergency contacts & confirmations`
             ];
         }
-        if (lower.includes('tax') || lower.includes('renew') || lower.includes('registration') || lower.includes('dmv') || lower.includes('doctor') || lower.includes('bill') || lower.includes('insurance')) {
+        if (lower.includes('tax') || lower.includes('renew') || lower.includes('registration') || lower.includes('dmv') || lower.includes('doctor') || lower.includes('medical') || lower.includes('bill') || lower.includes('insurance') || lower.includes('escrow')) {
             return [
-                `Gather required identification & documents`,
-                `Fill out application or online portal forms`,
-                `Pay required processing fees`,
-                `Save confirmation receipt to records`,
-                `Calendar renewal deadline for next year`
+                `Gather statements, EOBs & account numbers`,
+                `Verify itemized charges & insurance coverage`,
+                `Call provider billing or log into portal`,
+                `Submit payment or set up payment plan`,
+                `Save confirmation receipt & update records`
             ];
         }
         if (lower.includes('code') || lower.includes('build') || lower.includes('feature') || lower.includes('bug') || lower.includes('api') || lower.includes('website')) {
@@ -1477,20 +1519,73 @@ app.prepare().then(() => {
         ];
     }
 
+    function extractGeminiErrorMessage(errData, statusCode) {
+        const raw = errData?.error?.message || (Array.isArray(errData) && errData[0]?.error?.message) || '';
+        if (statusCode === 402 || raw.toLowerCase().includes('prepayment credits are depleted')) {
+            return 'Gemini API credits depleted (HTTP 402): Your Google AI Studio prepayment credits are exhausted. Visit https://ai.studio/projects to top up billing or enter another API key.';
+        }
+        if (statusCode === 400 && raw.toLowerCase().includes('api key not valid')) {
+            return 'Invalid Gemini API key (HTTP 400): Please check the key in the Printer Ready menu.';
+        }
+        if (statusCode === 429) {
+            return 'Gemini API rate limit / quota exceeded (HTTP 429): Please wait a moment or check your AI Studio quota.';
+        }
+        return raw ? `Gemini API Error (${statusCode}): ${raw.trim()}` : `Gemini API returned HTTP ${statusCode}`;
+    }
+
+    async function verifyGeminiKey(apiKey, model) {
+        if (!apiKey) return { valid: false, keyError: null };
+        try {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(apiKey)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Api-Revision': '2026-05-20'
+                },
+                body: JSON.stringify({
+                    model: model || 'gemini-3.8-flash',
+                    input: 'Reply with OK'
+                })
+            });
+            if (response.ok) {
+                return { valid: true, keyError: null };
+            }
+            const errData = await response.json().catch(() => ({}));
+            return {
+                valid: false,
+                statusCode: response.status,
+                keyError: extractGeminiErrorMessage(errData, response.status)
+            };
+        } catch (err) {
+            return {
+                valid: false,
+                keyError: `Network error verifying Gemini key: ${err.message}`
+            };
+        }
+    }
+
     // --- AI Key Configuration Endpoints ---
-    expressApp.get('/api/config/gemini', (req, res) => {
+    expressApp.get('/api/config/gemini', async (req, res) => {
         const key = masterState.geminiApiKey || process.env.GEMINI_API_KEY || '';
         const source = masterState.geminiApiKey ? 'ui' : (process.env.GEMINI_API_KEY ? 'env' : 'none');
         const masked = key.length > 8 ? `${key.slice(0, 4)}••••${key.slice(-4)}` : (key ? '••••••••' : '');
+        const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
+        let verification = { valid: Boolean(key), keyError: null };
+        if (key && req.query.verify === '1') {
+            verification = await verifyGeminiKey(key, model);
+        }
+
         res.json({
             configured: Boolean(key),
             source,
             masked,
-            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+            model,
+            ...verification
         });
     });
 
-    expressApp.post('/api/config/gemini', (req, res) => {
+    expressApp.post('/api/config/gemini', async (req, res) => {
         const { apiKey } = req.body;
         if (typeof apiKey !== 'string') {
             return res.status(400).json({ error: 'apiKey must be a string' });
@@ -1506,13 +1601,20 @@ app.prepare().then(() => {
         const activeKey = masterState.geminiApiKey || process.env.GEMINI_API_KEY || '';
         const source = masterState.geminiApiKey ? 'ui' : (process.env.GEMINI_API_KEY ? 'env' : 'none');
         const masked = activeKey.length > 8 ? `${activeKey.slice(0, 4)}••••${activeKey.slice(-4)}` : (activeKey ? '••••••••' : '');
+        const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
+        let verification = { valid: false, keyError: null };
+        if (activeKey) {
+            verification = await verifyGeminiKey(activeKey, model);
+        }
 
         res.json({
             success: true,
             configured: Boolean(activeKey),
             source,
             masked,
-            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+            model,
+            ...verification
         });
     });
 
@@ -1523,49 +1625,84 @@ app.prepare().then(() => {
         }
         const goal = title.trim();
 
-        // 1. Try Gemini API if key is present (UI/server config -> client override -> .env)
-        const geminiKey = (typeof clientKey === 'string' && clientKey.trim()) || masterState.geminiApiKey || process.env.GEMINI_API_KEY;
-        const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-        if (geminiKey) {
-            try {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{
-                            parts: [{
-                                text: `You are an expert practical organizer and project breakdown assistant for a physical thermal task receipt system.
+        const promptText = `You are an expert practical organizer and project breakdown assistant for a physical thermal task receipt system.
 Break down the following goal or task into 3 to 5 clear, concrete, sequential, actionable steps.
 Each step must be short (under 45 characters, ideally starting with an action verb) so it fits neatly on a narrow thermal chit.
 Return ONLY a valid JSON array of strings, e.g. ["Step 1", "Step 2", "Step 3"]. No markdown formatting, no commentary.
 
-Goal: "${goal}"`
-                            }]
-                        }],
-                        generationConfig: {
-                            responseMimeType: "application/json"
+Goal: "${goal}"`;
+
+        // 1. Try Gemini API if key is present (UI/server config -> client override -> .env)
+        const geminiKey = (typeof clientKey === 'string' && clientKey.trim()) || masterState.geminiApiKey || process.env.GEMINI_API_KEY;
+        const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+        let aiError = null;
+        let aiStatus = null;
+
+        if (geminiKey) {
+            try {
+                // First try Interactions API (v1beta/interactions with Api-Revision: 2026-05-20)
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(geminiKey)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Api-Revision': '2026-05-20'
+                    },
+                    body: JSON.stringify({
+                        model: geminiModel,
+                        input: promptText,
+                        response_format: {
+                            type: 'text',
+                            mime_type: 'application/json',
+                            schema: {
+                                type: 'array',
+                                items: { type: 'string' }
+                            }
                         }
                     })
                 });
 
                 if (response.ok) {
                     const data = await response.json();
-                    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    let text = data?.output_text;
+                    if (!text && Array.isArray(data?.steps)) {
+                        for (let i = data.steps.length - 1; i >= 0; i--) {
+                            const step = data.steps[i];
+                            if (step.type === 'model_output' && Array.isArray(step.content)) {
+                                const textPart = step.content.find(c => c.type === 'text' && c.text);
+                                if (textPart) {
+                                    text = textPart.text;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!text && Array.isArray(data?.outputs)) {
+                        text = data.outputs[data.outputs.length - 1]?.text;
+                    }
                     if (text) {
-                        const parsed = JSON.parse(text);
+                        const parsed = JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
                         if (Array.isArray(parsed) && parsed.length > 0) {
-                            return res.json({ title: goal, subtasks: parsed.slice(0, 6) });
+                            return res.json({
+                                title: goal,
+                                subtasks: parsed.slice(0, 6).map(String),
+                                source: 'gemini',
+                                model: geminiModel
+                            });
                         }
                     }
                 } else {
                     const errData = await response.json().catch(() => ({}));
-                    console.warn(`Gemini (${geminiModel}) response error:`, response.status, errData);
+                    aiStatus = response.status;
+                    aiError = extractGeminiErrorMessage(errData, response.status);
+                    console.warn(`Gemini (${geminiModel}) response error:`, response.status, aiError);
                 }
             } catch (err) {
+                aiError = `Gemini connection failed: ${err.message}`;
                 console.warn(`Gemini (${geminiModel}) decomposition failed, falling back to heuristic engine:`, err.message);
             }
+        } else {
+            aiError = 'No Gemini API key configured. Enter a valid key in the Printer Ready menu to use live Gemini AI.';
         }
-
 
         // 2. Try OpenAI API if key is present
         const openAiKey = process.env.OPENAI_API_KEY;
@@ -1596,7 +1733,12 @@ Goal: "${goal}"`
                         const parsed = JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
                         const list = Array.isArray(parsed) ? parsed : (parsed.steps || parsed.tasks || parsed.subtasks || Object.values(parsed));
                         if (Array.isArray(list) && list.length > 0) {
-                            return res.json({ title: goal, subtasks: list.slice(0, 6).map(String) });
+                            return res.json({
+                                title: goal,
+                                subtasks: list.slice(0, 6).map(String),
+                                source: 'openai',
+                                model: 'gpt-4o-mini'
+                            });
                         }
                     }
                 }
@@ -1605,9 +1747,15 @@ Goal: "${goal}"`
             }
         }
 
-        // 3. Fallback: Intelligent semantic heuristic engine
+        // 3. Fallback: Intelligent semantic heuristic engine (with explicit aiError metadata so UI does not fail silently)
         const subtasks = generateHeuristicSubtasks(goal);
-        res.json({ title: goal, subtasks });
+        res.json({
+            title: goal,
+            subtasks,
+            source: 'heuristic',
+            aiError,
+            aiStatus
+        });
     });
 
 

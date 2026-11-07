@@ -63,7 +63,7 @@ interface TaskStore {
     // Actions
     setCurrentUser: (email: string) => void;
     addTask: (parentId: string, title: string, priority?: 'normal' | 'high' | 'urgent') => void;
-    addTasksBatch: (parentId: string, titles: string[]) => void;
+    addTasksBatch: (parentId: string, titles: string[]) => Task[];
     toggleTask: (id: string) => void;
     updateTaskTitle: (id: string, title: string) => void;
     setTaskPriority: (id: string, priority?: 'normal' | 'high' | 'urgent') => void;
@@ -245,6 +245,7 @@ export const useTaskStore = create<TaskStore>()(
 
             addTasksBatch: (parentId, titles) => {
                 const now = Date.now();
+                const createdTasks: Task[] = [];
 
                 set((state) => {
                     const parentTask = state.tasks[parentId];
@@ -259,7 +260,7 @@ export const useTaskStore = create<TaskStore>()(
                     titles.forEach((title) => {
                         const newId = generateId();
                         newChildIds.push(newId);
-                        changedTasks[newId] = {
+                        const newTask: Task = {
                             id: newId,
                             title,
                             completed: false,
@@ -268,6 +269,8 @@ export const useTaskStore = create<TaskStore>()(
                             createdAt: now,
                             createdBy: state.currentUser || 'local'
                         };
+                        changedTasks[newId] = newTask;
+                        createdTasks.push(newTask);
                     });
 
                     const updatedParent = {
@@ -276,14 +279,36 @@ export const useTaskStore = create<TaskStore>()(
                     };
                     changedTasks[parentId] = updatedParent;
 
+                    // Ensure parentTask is selected and expanded in Miller column path
+                    let newPath = state.path;
+                    let newSelectedId = state.selectedTaskId;
+                    if (parentId !== INITIAL_ROOT_ID) {
+                        newSelectedId = parentId;
+                        const chain: string[] = [];
+                        let curr: string | undefined = parentId;
+                        const visited = new Set<string>();
+                        while (curr && !visited.has(curr)) {
+                            visited.add(curr);
+                            chain.unshift(curr);
+                            const currentId: string = curr;
+                            const t: Task | undefined = state.tasks[currentId];
+                            if (!t || currentId === INITIAL_ROOT_ID) break;
+                            curr = t.parentId || Object.values(state.tasks).find(p => p.children.includes(currentId))?.id;
+                        }
+                        if (chain[0] !== INITIAL_ROOT_ID) {
+                            chain.unshift(INITIAL_ROOT_ID);
+                        }
+                        newPath = chain;
+                    }
+
                     const newState = {
                         ...state,
                         tasks: {
                             ...state.tasks,
                             ...changedTasks
                         },
-                        selectedTaskId: state.selectedTaskId,
-                        path: state.path,
+                        selectedTaskId: newSelectedId,
+                        path: newPath,
                         lastModified: now,
                         lastAction: 'add' as const
                     };
@@ -291,6 +316,8 @@ export const useTaskStore = create<TaskStore>()(
                     broadcastPatch(changedTasks);
                     return newState;
                 });
+
+                return createdTasks;
             },
 
             toggleTask: (id) => {

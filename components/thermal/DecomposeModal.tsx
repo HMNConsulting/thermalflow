@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogClose } from '@/components/ui/dialog';
 import { useTaskStore, useTask } from '@/lib/store';
-import { Sparkles, Printer, Plus, Trash2, CheckCircle2, ArrowRight, X, Loader2 } from 'lucide-react';
+import { Sparkles, Printer, Plus, Trash2, AlertTriangle, X, Loader2 } from 'lucide-react';
 import { getPrintServerUrl, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -34,16 +34,23 @@ export function DecomposeModal({
     const [steps, setSteps] = useState<StepItem[]>([]);
     const [loading, setLoading] = useState(false);
     const [printing, setPrinting] = useState(false);
+    const [aiSource, setAiSource] = useState<'gemini' | 'openai' | 'heuristic' | null>(null);
+    const [aiModel, setAiModel] = useState<string | null>(null);
+    const [aiError, setAiError] = useState<string | null>(null);
 
     useEffect(() => {
         if (open) {
             const currentTitle = initialTitle || task?.title || '';
             setGoal(currentTitle);
+            setAiError(null);
+            setAiSource(null);
             if (currentTitle) {
                 handleDecompose(currentTitle);
             }
         } else {
             setSteps([]);
+            setAiError(null);
+            setAiSource(null);
         }
     }, [open, initialTitle, task?.title]);
 
@@ -52,6 +59,7 @@ export function DecomposeModal({
         if (!query) return;
 
         setLoading(true);
+        setAiError(null);
         try {
             const res = await fetch('/api/tasks/decompose', {
                 method: 'POST',
@@ -61,6 +69,11 @@ export function DecomposeModal({
 
             if (res.ok) {
                 const data = await res.json();
+                setAiSource(data.source || 'heuristic');
+                setAiModel(data.model || null);
+                if (data.aiError) {
+                    setAiError(data.aiError);
+                }
                 if (Array.isArray(data.subtasks)) {
                     setSteps(
                         data.subtasks.map((text: string, idx: number) => ({
@@ -71,10 +84,14 @@ export function DecomposeModal({
                     );
                 }
             } else {
-                toast.error("Failed to decompose task");
+                const err = await res.json().catch(() => ({}));
+                const msg = err.error || 'Failed to decompose task';
+                setAiError(msg);
+                toast.error(msg);
             }
         } catch {
-            toast.error("Decomposition server error");
+            setAiError('Decomposition server unreachable');
+            toast.error('Decomposition server error');
         } finally {
             setLoading(false);
         }
@@ -105,15 +122,16 @@ export function DecomposeModal({
         const targetParentId = taskId || 'root';
         if (selectedStepTexts.length === 0) {
             toast.error("Please select at least one step");
-            return;
+            return [];
         }
 
-        addTasksBatch(targetParentId, selectedStepTexts);
+        const created = addTasksBatch(targetParentId, selectedStepTexts);
         toast.success(`Added ${selectedStepTexts.length} subtasks to "${goal || 'Task'}"!`);
         onOpenChange(false);
+        return created;
     };
 
-    const handlePrintOnly = async () => {
+    const handlePrintOnly = async (createdTasks?: { id: string; title: string }[]) => {
         if (selectedStepTexts.length === 0) {
             toast.error("Please select at least one step");
             return;
@@ -124,33 +142,43 @@ export function DecomposeModal({
             const printServerUrl = getPrintServerUrl();
             const host = typeof window !== 'undefined' ? window.location.origin : '';
 
+            const subtasksPayload = (createdTasks && createdTasks.length > 0)
+                ? createdTasks.map(t => ({
+                    title: t.title,
+                    qrUrl: qrOnChits ? `${host}/api/tasks/toggle-qr?id=${t.id}` : undefined
+                }))
+                : selectedStepTexts.map(title => ({
+                    title,
+                    qrUrl: qrOnChits && taskId ? `${host}/api/tasks/toggle-qr?id=${taskId}` : undefined
+                }));
+
             const res = await fetch(`${printServerUrl}/print-action-plan`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     goalTitle: goal,
-                    subtasks: selectedStepTexts.map(title => ({
-                        title,
-                        qrUrl: qrOnChits && taskId ? `${host}/api/tasks/toggle-qr?id=${taskId}` : undefined
-                    }))
+                    subtasks: subtasksPayload
                 })
             });
 
             if (res.ok) {
                 toast.success("Action plan ticket sent to thermal printer!");
             } else {
-                toast.info("Thermal printer offline (Action plan printed to simulation)");
+                const errData = await res.json().catch(() => ({}));
+                toast.warning(errData.error ? `Print warning: ${errData.error}` : "Thermal printer offline (Action plan simulated)");
             }
         } catch {
-            toast.info("Thermal printer offline (Action plan simulated)");
+            toast.warning("Thermal printer offline (Action plan simulated)");
         } finally {
             setPrinting(false);
         }
     };
 
     const handleAddAndPrint = async () => {
-        handleAddToBoard();
-        await handlePrintOnly();
+        const created = handleAddToBoard();
+        if (created && created.length > 0) {
+            await handlePrintOnly(created);
+        }
     };
 
     return (
@@ -165,6 +193,16 @@ export function DecomposeModal({
                         <span className="font-bold text-sm tracking-wider uppercase text-zinc-900 dark:text-zinc-100">
                             AI Task Decomposer
                         </span>
+                        {aiSource === 'gemini' && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 uppercase">
+                                {aiModel || 'Gemini AI'}
+                            </span>
+                        )}
+                        {aiSource === 'heuristic' && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 uppercase">
+                                Offline Template
+                            </span>
+                        )}
                     </div>
                     <DialogClose aria-label="Close decomposer" className="opacity-70 hover:opacity-100 transition-opacity p-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-white">
                         <X size={16} />
@@ -173,6 +211,16 @@ export function DecomposeModal({
 
                 {/* Body */}
                 <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+                    {aiError && (
+                        <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
+                            <AlertTriangle size={15} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                            <div className="space-y-1">
+                                <p className="font-bold uppercase tracking-wide text-[10px]">AI Unavailable — Using Offline Template</p>
+                                <p className="text-[11px] opacity-90">{aiError}</p>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Goal Input */}
                     <div>
                         <label htmlFor="decompose-goal-input" className="text-[10px] font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider block mb-1.5">
@@ -276,7 +324,7 @@ export function DecomposeModal({
                 <div className="px-5 py-3.5 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-2">
                     <button
                         type="button"
-                        onClick={handlePrintOnly}
+                        onClick={() => handlePrintOnly()}
                         disabled={selectedStepTexts.length === 0 || printing}
                         className="px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5 transition-colors disabled:opacity-50"
                     >

@@ -23,6 +23,9 @@ interface GeminiConfig {
     source: 'ui' | 'env' | 'none';
     masked: string;
     model: string;
+    valid?: boolean;
+    statusCode?: number;
+    keyError?: string | null;
 }
 
 export function PrinterStatusBar() {
@@ -66,9 +69,9 @@ export function PrinterStatusBar() {
         }
     };
 
-    const fetchGeminiConfig = async () => {
+    const fetchGeminiConfig = async (verify = false) => {
         try {
-            const res = await fetch('/api/config/gemini');
+            const res = await fetch(`/api/config/gemini${verify ? '?verify=1' : ''}`);
             if (res.ok) {
                 const data = await res.json();
                 setGeminiConfig(data);
@@ -77,6 +80,12 @@ export function PrinterStatusBar() {
             // ignore
         }
     };
+
+    useEffect(() => {
+        if (isOpen) {
+            fetchGeminiConfig(true);
+        }
+    }, [isOpen]);
 
     useEffect(() => {
         fetchStatus();
@@ -116,7 +125,11 @@ export function PrinterStatusBar() {
                 setGeminiConfig(data);
                 setApiKeyInput('');
                 setShowKey(false);
-                toast.success('Gemini API key saved!');
+                if (data.keyError) {
+                    toast.warning(data.keyError);
+                } else {
+                    toast.success('Gemini API key verified & saved!');
+                }
             } else {
                 toast.error('Failed to save API key');
             }
@@ -300,15 +313,26 @@ export function PrinterStatusBar() {
                                     <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-600 dark:text-zinc-400">Gemini API Key</span>
                                 </label>
                                 {geminiConfig?.configured ? (
-                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                                        {geminiConfig.source === 'env' ? 'ENV ACTIVE' : geminiConfig.masked}
-                                    </span>
+                                    geminiConfig.keyError ? (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-red-500/15 text-red-600 dark:text-red-400">
+                                            {geminiConfig.statusCode === 402 ? 'CREDITS DEPLETED' : 'KEY ERROR'} ({geminiConfig.masked})
+                                        </span>
+                                    ) : (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                                            {geminiConfig.source === 'env' ? 'ENV ACTIVE' : geminiConfig.masked}
+                                        </span>
+                                    )
                                 ) : (
                                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400">
                                         NOT SET
                                     </span>
                                 )}
                             </div>
+                            {geminiConfig?.keyError && (
+                                <div className="mb-1.5 px-2 py-1.5 rounded bg-red-500/10 border border-red-500/25 text-[10px] text-red-700 dark:text-red-300 leading-snug">
+                                    {geminiConfig.keyError}
+                                </div>
+                            )}
                             <div className="flex items-center gap-1.5">
                                 <div className="relative flex-1">
                                     <input
