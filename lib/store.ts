@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
-import { persist, createJSONStorage } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
 import { io, Socket } from 'socket.io-client';
 
 // Simple ID generator
@@ -16,12 +16,124 @@ export interface Task {
     completedAt?: number;
     createdBy: string;
     priority?: 'normal' | 'high' | 'urgent';
+    taskType?: 'task' | 'grocery';
     recurrence?: {
         frequency: 'daily' | 'weekly' | 'custom';
         cron: string;        // "0 9 * * *"
         nextRun: number;     // Timestamp
         action: 'reset' | 'clone'; // 'reset' unchecks the task, 'clone' makes a copy
     };
+}
+
+const GROCERY_TITLE_REGEX = /\b(grocer(y|ies)|shopping\s*list|grocery\s*list|market\s*list|supermarket|costco|trader\s*joe'?s|whole\s*foods|safeway|kroger|aldi|heb|publix|wegmans|farmers\s*market)\b/i;
+
+export function isGroceryTaskTitle(title: string): boolean {
+    if (!title) return false;
+    return GROCERY_TITLE_REGEX.test(title.trim());
+}
+
+export function isGroceryList(task?: Task | null): boolean {
+    if (!task || task.id === 'root') return false;
+    if (task.taskType === 'grocery') return true;
+    if (task.taskType === 'task') return false;
+    return isGroceryTaskTitle(task.title);
+}
+
+export function isInsideGroceryList(taskId: string, tasks: Record<string, Task>): boolean {
+    const task = tasks[taskId];
+    if (!task) return false;
+    const parentId = task.parentId || Object.values(tasks).find(p => p.children?.includes(taskId))?.id;
+    if (!parentId || parentId === 'root') return false;
+    const parent = tasks[parentId];
+    return isGroceryList(parent);
+}
+
+/**
+ * Splits a grocery input string by commas or newlines (ignoring commas inside parentheses),
+ * e.g. "2x Milk, Eggs (12), Avocados x4" -> ["2x Milk", "Eggs (12)", "Avocados x4"]
+ */
+export function parseGroceryInput(rawInput: string): string[] {
+    const results: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+
+    for (let i = 0; i < rawInput.length; i++) {
+        const ch = rawInput[i];
+        if (ch === '(') parenDepth++;
+        else if (ch === ')' && parenDepth > 0) parenDepth--;
+
+        if ((ch === ',' || ch === '\n' || ch === ';') && parenDepth === 0) {
+            const trimmed = current.trim();
+            if (trimmed) results.push(trimmed);
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    const finalTrimmed = current.trim();
+    if (finalTrimmed) results.push(finalTrimmed);
+    return results;
+}
+
+/**
+ * Extracts a smart quantity badge and clean item name from a grocery item title.
+ * Examples:
+ * - "2x Milk" -> { quantity: "2x", name: "Milk" }
+ * - "Eggs (12)" -> { quantity: "12", name: "Eggs" }
+ * - "Avocados x4" -> { quantity: "x4", name: "Avocados" }
+ * - "2 lbs Ground Beef" -> { quantity: "2 lbs", name: "Ground Beef" }
+ * - "Milk - 1 gal" -> { quantity: "1 gal", name: "Milk" }
+ */
+export function parseGroceryItemDisplay(title: string): { name: string; quantity?: string } {
+    const raw = (title || '').trim();
+    if (!raw) return { name: '' };
+
+    // 1. Prefix like "2x Milk", "2 x Milk", "3ct Lemons", "2 lbs Chicken"
+    const prefixMultiplier = raw.match(/^(\d+(?:\.\d+)?\s*(?:x|ct|pk|pack|packs|bunch|bunches|can|cans|jar|jars|bag|bags|box|boxes|bottle|bottles|gal|qt|pt|lb|lbs|oz|kg|g|ml|l|loaf|loaves|head|heads|pint|pints|cup|cups))\s+(.+)$/i);
+    if (prefixMultiplier) {
+        return {
+            quantity: prefixMultiplier[1].replace(/\s+/g, ' ').trim(),
+            name: prefixMultiplier[2].trim()
+        };
+    }
+
+    // 2. Suffix in parentheses like "Eggs (12)" or "Chicken breast (2 lbs)"
+    const parenSuffix = raw.match(/^(.+?)\s*\((\d+[^)]*)\)$/);
+    if (parenSuffix) {
+        return {
+            name: parenSuffix[1].trim(),
+            quantity: parenSuffix[2].trim()
+        };
+    }
+
+    // 3. Suffix multiplier like "Avocados x4" or "Milk x 2"
+    const suffixMultiplier = raw.match(/^(.+?)\s+(x\s*\d+|\d+\s*x)$/i);
+    if (suffixMultiplier) {
+        return {
+            name: suffixMultiplier[1].trim(),
+            quantity: suffixMultiplier[2].replace(/\s+/g, '').toLowerCase()
+        };
+    }
+
+    // 4. Dash suffix with number like "Milk - 1 gal" or "Apples - 6"
+    const dashSuffix = raw.match(/^(.+?)\s+[-–]\s*(\d+.*)$/);
+    if (dashSuffix && dashSuffix[2].length <= 12) {
+        return {
+            name: dashSuffix[1].trim(),
+            quantity: dashSuffix[2].trim()
+        };
+    }
+
+    // 5. Simple leading integer count like "4 Avocados"
+    const leadingCount = raw.match(/^(\d+)\s+([a-zA-Z].+)$/);
+    if (leadingCount && parseInt(leadingCount[1], 10) <= 99) {
+        return {
+            quantity: `${leadingCount[1]}x`,
+            name: leadingCount[2].trim()
+        };
+    }
+
+    return { name: raw };
 }
 
 export interface ScheduledPrint {
@@ -62,11 +174,13 @@ interface TaskStore {
 
     // Actions
     setCurrentUser: (email: string) => void;
-    addTask: (parentId: string, title: string, priority?: 'normal' | 'high' | 'urgent') => void;
-    addTasksBatch: (parentId: string, titles: string[]) => Task[];
+    addTask: (parentId: string, title: string, priority?: 'normal' | 'high' | 'urgent', taskType?: 'task' | 'grocery') => string | null;
+    addTasksBatch: (parentId: string, titles: string[], taskType?: 'task' | 'grocery') => Task[];
     toggleTask: (id: string) => void;
     updateTaskTitle: (id: string, title: string) => void;
     setTaskPriority: (id: string, priority?: 'normal' | 'high' | 'urgent') => void;
+    setTaskType: (id: string, taskType: 'task' | 'grocery') => void;
+    clearCheckedGroceryItems: (groceryListId: string) => void;
     setTaskRecurrence: (id: string, recurrence: Task['recurrence'] | undefined) => void;
     deleteTask: (id: string) => void;
     clearCompletedTasks: () => void;
@@ -194,9 +308,10 @@ export const useTaskStore = create<TaskStore>()(
             setShowCompleted: (show) => set({ showCompleted: show }),
             toggleCompletedColumn: () => set((state) => ({ showCompleted: !state.showCompleted })),
 
-            addTask: (parentId, title, priority) => {
+            addTask: (parentId, title, priority, taskType) => {
                 const now = Date.now();
                 const newId = generateId();
+                let created = false;
 
                 set((state) => {
                     const parentTask = state.tasks[parentId];
@@ -204,6 +319,9 @@ export const useTaskStore = create<TaskStore>()(
                         console.error(`Parent task ${parentId} not found`);
                         return state;
                     }
+
+                    const resolvedType: 'task' | 'grocery' | undefined =
+                        taskType || (parentId === INITIAL_ROOT_ID && isGroceryTaskTitle(title) ? 'grocery' : undefined);
 
                     const newTask: Task = {
                         id: newId,
@@ -213,7 +331,8 @@ export const useTaskStore = create<TaskStore>()(
                         parentId,
                         createdAt: now,
                         createdBy: state.currentUser || 'local',
-                        priority: priority || undefined
+                        priority: priority || undefined,
+                        taskType: resolvedType
                     };
 
                     const updatedParent = {
@@ -227,6 +346,7 @@ export const useTaskStore = create<TaskStore>()(
                         [parentId]: updatedParent
                     };
 
+                    created = true;
                     const newState = {
                         ...state,
                         tasks: {
@@ -242,9 +362,11 @@ export const useTaskStore = create<TaskStore>()(
                     broadcastPatch(changedTasks);
                     return newState;
                 });
+
+                return created ? newId : null;
             },
 
-            addTasksBatch: (parentId, titles) => {
+            addTasksBatch: (parentId, titles, taskType) => {
                 const now = Date.now();
                 const createdTasks: Task[] = [];
 
@@ -261,6 +383,8 @@ export const useTaskStore = create<TaskStore>()(
                     titles.forEach((title) => {
                         const newId = generateId();
                         newChildIds.push(newId);
+                        const resolvedType: 'task' | 'grocery' | undefined =
+                            taskType || (parentId === INITIAL_ROOT_ID && isGroceryTaskTitle(title) ? 'grocery' : undefined);
                         const newTask: Task = {
                             id: newId,
                             title,
@@ -268,7 +392,8 @@ export const useTaskStore = create<TaskStore>()(
                             children: [],
                             parentId,
                             createdAt: now,
-                            createdBy: state.currentUser || 'local'
+                            createdBy: state.currentUser || 'local',
+                            taskType: resolvedType
                         };
                         changedTasks[newId] = newTask;
                         createdTasks.push(newTask);
@@ -456,6 +581,76 @@ export const useTaskStore = create<TaskStore>()(
                         lastModified: Date.now()
                     };
                     broadcastPatch(changedTasks);
+                    return newState;
+                });
+            },
+
+            setTaskType: (id, taskType) => {
+                set((state) => {
+                    const task = state.tasks[id];
+                    if (!task || task.id === INITIAL_ROOT_ID) return state;
+                    const updatedTask = { ...task, taskType };
+                    const changedTasks = { [id]: updatedTask };
+
+                    const newState = {
+                        ...state,
+                        tasks: {
+                            ...state.tasks,
+                            ...changedTasks
+                        },
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
+                        lastModified: Date.now()
+                    };
+                    broadcastPatch(changedTasks);
+                    return newState;
+                });
+            },
+
+            clearCheckedGroceryItems: (groceryListId) => {
+                set((state) => {
+                    const listTask = state.tasks[groceryListId];
+                    if (!listTask || !Array.isArray(listTask.children)) return state;
+
+                    const checkedChildIds = listTask.children.filter(cid => state.tasks[cid]?.completed);
+                    if (checkedChildIds.length === 0) return state;
+
+                    const newTasks = { ...state.tasks };
+                    const deletedIds: string[] = [];
+                    const stack = [...checkedChildIds];
+
+                    while (stack.length > 0) {
+                        const currId = stack.pop()!;
+                        if (deletedIds.includes(currId)) continue;
+                        deletedIds.push(currId);
+                        const currTask = newTasks[currId];
+                        if (currTask && Array.isArray(currTask.children)) {
+                            currTask.children.forEach(subId => stack.push(subId));
+                        }
+                        delete newTasks[currId];
+                    }
+
+                    const deletedSet = new Set(deletedIds);
+                    const updatedListTask: Task = {
+                        ...listTask,
+                        children: listTask.children.filter(cid => !deletedSet.has(cid))
+                    };
+                    newTasks[groceryListId] = updatedListTask;
+
+                    const newState = {
+                        ...state,
+                        tasks: newTasks,
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
+                        lastModified: Date.now(),
+                        lastAction: 'delete' as const
+                    };
+
+                    broadcastPatch({ [groceryListId]: updatedListTask }, deletedIds);
                     return newState;
                 });
             },
@@ -652,9 +847,13 @@ export const useTaskStore = create<TaskStore>()(
                     const deletedIds: string[] = [];
                     const changedParents: Record<string, Task> = {};
 
-                    // Collect all completed tasks (excluding root) and their subtrees
+                    // Collect all completed tasks (excluding root and items inside an active grocery list) and their subtrees
                     Object.values(state.tasks).forEach(task => {
                         if (task.id !== INITIAL_ROOT_ID && task.completed) {
+                            const parent = task.parentId ? state.tasks[task.parentId] : Object.values(state.tasks).find(p => p.children?.includes(task.id));
+                            if (parent && !parent.completed && isGroceryList(parent)) {
+                                return;
+                            }
                             const stack = [task.id];
                             while (stack.length > 0) {
                                 const cid = stack.pop()!;
@@ -745,10 +944,6 @@ export const useTaskStore = create<TaskStore>()(
                         // Append the selected task (expanding it)
                         newPath.push(id);
                     } else {
-                        // Fallback: This might happen if parent isn't in current path (jumping context)
-                        // Ideally we should rebuild path from root, but that's expensive without back-links.
-                        // For now, if we select something completely outside, we might just keep path?
-                        // Or if parent is root, path is [root, id].
                         if (parent.id === INITIAL_ROOT_ID) {
                             newPath = [INITIAL_ROOT_ID, id];
                         }
@@ -883,7 +1078,7 @@ export const useTaskStore = create<TaskStore>()(
                 const { currentUser, undoStack, redoStack, canUndo, canRedo, ...rest } = state;
                 return rest;
             },
-            onRehydrateStorage: () => (state) => {
+            onRehydrateStorage: () => () => {
                 console.log('State rehydrated');
             }
         }
@@ -977,4 +1172,3 @@ export const useUniqueCreators = () => {
         })
     );
 };
-

@@ -292,17 +292,41 @@ const templates = {
     },
     receipt: (printer, title, date, tasks, imageStr) => {
         printer
+            .font("a")
+            .align("ct")
+            .style("b")
+            .text(sanitizeText(title) || "RECEIPT")
+            .style("normal")
+            .text(date || new Date().toLocaleString())
+            .text("================================")
+            .align("lt");
+        if (tasks && Array.isArray(tasks)) {
+            sanitizeTasks(tasks).forEach(task => printer.text("  " + task));
+        }
+    },
+    grocery: (printer, title, date, tasks, imageStr) => {
+        const cleanList = Array.isArray(tasks) ? sanitizeTasks(tasks) : [];
+        printer
             .font('a')
             .align('ct')
             .style('b')
-            .text(sanitizeText(title) || 'RECEIPT')
+            .size(1, 1)
+            .text(sanitizeText(title) || 'GROCERY LIST')
+            .size(0, 0)
             .style('normal')
             .text(date || new Date().toLocaleString())
             .text('================================')
             .align('lt');
-        if (tasks && Array.isArray(tasks)) {
-            sanitizeTasks(tasks).forEach(task => printer.text(`  ${task}`));
-        }
+        cleanList.forEach(item => {
+            printer.text(' ' + item);
+        });
+        printer
+            .align('ct')
+            .text('--------------------------------')
+            .style('b')
+            .text('ITEMS TO BUY: ' + cleanList.length)
+            .style('normal')
+            .text('================================');
     }
 };
 

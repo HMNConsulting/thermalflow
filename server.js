@@ -56,6 +56,15 @@ function loadData() {
     };
 }
 
+const SERVER_GROCERY_TITLE_REGEX = /\b(grocer(y|ies)|shopping\s*list|grocery\s*list|market\s*list|supermarket|costco|trader\s*joe'?s|whole\s*foods|safeway|kroger|aldi|heb|publix|wegmans|farmers\s*market)\b/i;
+
+function isServerGroceryList(task) {
+    if (!task || task.id === 'root') return false;
+    if (task.taskType === 'grocery') return true;
+    if (task.taskType === 'task') return false;
+    return SERVER_GROCERY_TITLE_REGEX.test((task.title || '').trim());
+}
+
 function runGC(state) {
     const RETENTION_HOURS = 24;
     const RETENTION_MS = RETENTION_HOURS * 60 * 60 * 1000;
@@ -66,10 +75,16 @@ function runGC(state) {
     const tasksToRemove = new Set();
 
     // 1. Mark expired completed tasks (completed > 24h ago) and their entire subtrees for removal
+    // (Except checked items inside an uncompleted Grocery List, which stay available for reuse)
     Object.values(state.tasks).forEach(task => {
         if (!task || task.id === 'root' || task.recurrence) return;
 
         if (task.completed) {
+            const parent = task.parentId ? state.tasks[task.parentId] : null;
+            if (parent && !parent.completed && isServerGroceryList(parent)) {
+                return;
+            }
+
             const completedAt = typeof task.completedAt === 'string'
                 ? new Date(task.completedAt).getTime()
                 : task.completedAt;
@@ -879,11 +894,13 @@ app.prepare().then(() => {
 
     const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || 'https://tasks.nebulous.space';
 
-    async function createTaskAndPrint({ title, parentId = 'root', priority, print = true, qrOnChit = true, createdBy = 'gemini-mcp' }) {
+    async function createTaskAndPrint({ title, parentId = 'root', priority, taskType, print = true, qrOnChit = true, createdBy = 'gemini-mcp' }) {
         const cleanTitle = title.trim();
         const newId = Math.random().toString(36).substring(2, 9);
         const now = Date.now();
         const targetParentId = masterState.tasks[parentId] ? parentId : 'root';
+
+        const resolvedType = taskType || (targetParentId === 'root' && SERVER_GROCERY_TITLE_REGEX.test(cleanTitle) ? 'grocery' : undefined);
 
         const newTask = {
             id: newId,
@@ -893,7 +910,8 @@ app.prepare().then(() => {
             parentId: targetParentId,
             createdAt: now,
             createdBy,
-            priority: priority && priority !== 'normal' ? priority : undefined
+            priority: priority && priority !== 'normal' ? priority : undefined,
+            taskType: resolvedType
         };
 
         masterState.tasks[newId] = newTask;
@@ -942,6 +960,33 @@ app.prepare().then(() => {
         return { taskId: newId, task: newTask, printed: Boolean(print), printResult };
     }
 
+    async function printConsolidatedGroceryList(listTask) {
+        if (!listTask) return { ok: false, error: 'Grocery list not found' };
+        const childTasks = (listTask.children || [])
+            .map(cid => masterState.tasks[cid])
+            .filter(Boolean);
+        const unchecked = childTasks.filter(t => !t.completed);
+        const targetItems = unchecked.length > 0 ? unchecked : childTasks;
+        const formattedLines = targetItems.map(t => `[${t.completed ? 'x' : ' '}] ${t.title}`);
+
+        try {
+            const resp = await fetch(`${PRINT_SERVER_BASE}/print`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: `GROCERY: ${listTask.title.toUpperCase()}`,
+                    date: new Date().toLocaleString(),
+                    tasks: formattedLines.length > 0 ? formattedLines : ['[ ] (Empty grocery list)'],
+                    template: 'grocery'
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            return { ok: resp.ok, data };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    }
+
     expressApp.post('/api/tasks/capture', async (req, res) => {
         const { title, parentId = 'root', priority, print = true, qrOnChit = true } = req.body;
 
@@ -986,18 +1031,18 @@ app.prepare().then(() => {
         },
         {
             name: 'add_task',
-            description: 'Add a new task (or multiple tasks) to ThermalFlow and physically print a thermal receipt chit by default. Print on creation defaults to true.',
+            description: 'Add a new task (or Grocery List) to ThermalFlow and physically print a thermal receipt chit by default. Print on creation defaults to true.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     title: {
                         type: 'string',
-                        description: 'The title of the task to create.'
+                        description: 'The title of the task or grocery list to create.'
                     },
                     subtasks: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Optional list of subtask titles to create under this task.'
+                        description: 'Optional list of subtask titles (or grocery items) to create under this task.'
                     },
                     parentId: {
                         type: 'string',
@@ -1008,12 +1053,57 @@ app.prepare().then(() => {
                         enum: ['normal', 'high', 'urgent'],
                         description: 'Task priority level (default: normal).'
                     },
+                    taskType: {
+                        type: 'string',
+                        enum: ['task', 'grocery'],
+                        description: 'Set to "grocery" to create a styled Grocery Shopping List note.'
+                    },
                     print: {
                         type: 'boolean',
-                        description: 'Whether to physically print the task chit on the thermal printer upon creation. Defaults to true.'
+                        description: 'Whether to physically print on the thermal printer upon creation. Defaults to true.'
                     }
                 },
                 required: ['title']
+            }
+        },
+        {
+            name: 'add_grocery_items',
+            description: 'Add one or more grocery items (with optional quantities like "2x Milk", "Eggs (12)", "Avocados x4") to a Grocery List on the ThermalFlow board. Creates the Grocery List automatically if it does not exist, and prints a single consolidated grocery shopping receipt by default.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    items: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'List of grocery items to add (e.g. ["2x Milk", "Eggs (12)", "Sourdough bread"]).'
+                    },
+                    listName: {
+                        type: 'string',
+                        description: 'Optional name of the Grocery List (e.g. "Grocery List", "Costco", "Trader Joe\'s"). Defaults to an active Grocery List or "Grocery List".'
+                    },
+                    print: {
+                        type: 'boolean',
+                        description: 'Whether to print the consolidated grocery list receipt after adding items. Defaults to true.'
+                    }
+                },
+                required: ['items']
+            }
+        },
+        {
+            name: 'print_grocery_list',
+            description: 'Print a consolidated Grocery Shopping List receipt on the physical thermal printer.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    listName: {
+                        type: 'string',
+                        description: 'Optional name of the grocery list to print (defaults to the active Grocery List).'
+                    },
+                    taskId: {
+                        type: 'string',
+                        description: 'Optional exact task ID of the grocery list to print.'
+                    }
+                }
             }
         },
         {
@@ -1095,7 +1185,8 @@ app.prepare().then(() => {
                     ? ` (under "${masterState.tasks[t.parentId].title}")`
                     : '';
                 const prio = t.priority && t.priority !== 'normal' ? ` [${t.priority.toUpperCase()}]` : '';
-                return `- [${t.completed ? 'x' : ' '}] ${t.title}${prio} (id: ${t.id})${parentTitle}`;
+                const groc = isServerGroceryList(t) ? ' [GROCERY LIST]' : '';
+                return `- [${t.completed ? 'x' : ' '}] ${t.title}${groc}${prio} (id: ${t.id})${parentTitle}`;
             });
 
             return {
@@ -1104,6 +1195,90 @@ app.prepare().then(() => {
                     text: filtered.length > 0
                         ? `Found ${filtered.length} task(s):\n${lines.join('\n')}`
                         : `No ${status} tasks found.`
+                }]
+            };
+        }
+
+        if (name === 'add_grocery_items') {
+            const rawItems = Array.isArray(args.items) ? args.items : (typeof args.items === 'string' ? args.items.split(',') : []);
+            const cleanItems = rawItems.map(i => String(i || '').trim()).filter(Boolean);
+            if (cleanItems.length === 0) {
+                return { isError: true, content: [{ type: 'text', text: 'Error: items array is required and must contain at least one item.' }] };
+            }
+
+            const desiredName = (args.listName || '').trim();
+            const shouldPrint = args.print !== false;
+
+            // Find an existing uncompleted grocery list matching desiredName, or any active grocery list at root
+            const rootChildren = (masterState.tasks.root?.children || []).map(id => masterState.tasks[id]).filter(Boolean);
+            let targetList = null;
+            if (desiredName) {
+                targetList = rootChildren.find(t => !t.completed && t.title.toLowerCase() === desiredName.toLowerCase());
+            }
+            if (!targetList && !desiredName) {
+                targetList = rootChildren.find(t => !t.completed && isServerGroceryList(t));
+            }
+
+            if (!targetList) {
+                const listTitle = desiredName || 'Grocery List';
+                const createdList = await createTaskAndPrint({
+                    title: listTitle,
+                    parentId: 'root',
+                    taskType: 'grocery',
+                    print: false,
+                    createdBy: 'gemini-mcp'
+                });
+                targetList = masterState.tasks[createdList.taskId];
+            } else if (targetList.taskType !== 'grocery') {
+                targetList.taskType = 'grocery';
+            }
+
+            const addedTasks = [];
+            for (const itemTitle of cleanItems) {
+                const resItem = await createTaskAndPrint({
+                    title: itemTitle,
+                    parentId: targetList.id,
+                    print: false, // Suppress individual item chits
+                    createdBy: 'gemini-mcp'
+                });
+                addedTasks.push(resItem.task);
+            }
+
+            let printMsg = 'Print skipped (print=false).';
+            if (shouldPrint) {
+                const printRes = await printConsolidatedGroceryList(masterState.tasks[targetList.id]);
+                printMsg = printRes.ok ? 'Printed consolidated Grocery List receipt.' : 'Queued/simulated grocery receipt.';
+            }
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Added ${addedTasks.length} item(s) (${cleanItems.join(', ')}) to Grocery List "${targetList.title}" (id: ${targetList.id}). ${printMsg}`
+                }]
+            };
+        }
+
+        if (name === 'print_grocery_list') {
+            const rootChildren = (masterState.tasks.root?.children || []).map(id => masterState.tasks[id]).filter(Boolean);
+            let targetList = args.taskId ? masterState.tasks[args.taskId] : null;
+            if (!targetList && args.listName) {
+                const q = args.listName.trim().toLowerCase();
+                targetList = rootChildren.find(t => !t.completed && t.title.toLowerCase().includes(q));
+            }
+            if (!targetList) {
+                targetList = rootChildren.find(t => !t.completed && isServerGroceryList(t));
+            }
+            if (!targetList) {
+                return { isError: true, content: [{ type: 'text', text: 'No active Grocery List found to print.' }] };
+            }
+
+            const printRes = await printConsolidatedGroceryList(targetList);
+            return {
+                content: [{
+                    type: 'text',
+                    text: printRes.ok
+                        ? `Printed consolidated Grocery List receipt for "${targetList.title}".`
+                        : `Queued/simulated Grocery List receipt for "${targetList.title}".`
                 }]
             };
         }
@@ -1117,12 +1292,14 @@ app.prepare().then(() => {
             const shouldPrint = args.print !== false;
             const parentId = args.parentId || 'root';
             const priority = args.priority || 'normal';
+            const isGrocery = args.taskType === 'grocery' || (parentId === 'root' && SERVER_GROCERY_TITLE_REGEX.test(title)) || (masterState.tasks[parentId] && isServerGroceryList(masterState.tasks[parentId]));
 
             const mainResult = await createTaskAndPrint({
                 title,
                 parentId,
                 priority,
-                print: shouldPrint,
+                taskType: args.taskType || (parentId === 'root' && SERVER_GROCERY_TITLE_REGEX.test(title) ? 'grocery' : undefined),
+                print: shouldPrint && !isGrocery,
                 qrOnChit: true,
                 createdBy: 'gemini-mcp'
             });
@@ -1135,7 +1312,7 @@ app.prepare().then(() => {
                             title: subTitle.trim(),
                             parentId: mainResult.taskId,
                             priority: 'normal',
-                            print: shouldPrint,
+                            print: shouldPrint && !isGrocery,
                             qrOnChit: true,
                             createdBy: 'gemini-mcp'
                         });
@@ -1144,9 +1321,18 @@ app.prepare().then(() => {
                 }
             }
 
-            const printStatusMsg = shouldPrint
-                ? (mainResult.printResult && !mainResult.printResult.error ? 'Printed to thermal printer.' : 'Queued/simulated print.')
-                : 'Print skipped (print=false).';
+            let printStatusMsg = 'Print skipped (print=false).';
+            if (shouldPrint) {
+                if (isGrocery) {
+                    const listTask = masterState.tasks[mainResult.taskId]?.taskType === 'grocery'
+                        ? masterState.tasks[mainResult.taskId]
+                        : masterState.tasks[parentId];
+                    const pRes = await printConsolidatedGroceryList(listTask || masterState.tasks[mainResult.taskId]);
+                    printStatusMsg = pRes.ok ? 'Printed consolidated Grocery List receipt.' : 'Queued/simulated grocery receipt.';
+                } else {
+                    printStatusMsg = mainResult.printResult && !mainResult.printResult.error ? 'Printed to thermal printer.' : 'Queued/simulated print.';
+                }
+            }
 
             return {
                 content: [{
@@ -2033,6 +2219,102 @@ app.prepare().then(() => {
         ];
     }
 
+    function generateHeuristicGroceryItems(goal) {
+        const lower = (goal || '').toLowerCase();
+
+        if (lower.includes('tikka') || lower.includes('curry') || lower.includes('indian') || lower.includes('masala')) {
+            return [
+                '2 lbs Chicken thighs',
+                '1 can Crushed tomatoes',
+                '1 can Coconut milk',
+                '1 cup Plain Greek yogurt',
+                '2x Garlic & Ginger',
+                '1 jar Garam masala',
+                '2 lbs Basmati rice',
+                '1 bunch Fresh cilantro'
+            ];
+        }
+        if (lower.includes('taco') || lower.includes('fajita') || lower.includes('burrito') || lower.includes('mexican') || lower.includes('enchilada')) {
+            return [
+                '2 packs Corn tortillas',
+                '1.5 lbs Skirt steak or ground beef',
+                '3x Avocados',
+                '4x Limes',
+                '1 bunch Cilantro',
+                '1x White onion',
+                '8 oz Cotija or cheddar cheese',
+                '1 jar Salsa verde'
+            ];
+        }
+        if (lower.includes('pasta') || lower.includes('spaghetti') || lower.includes('lasagna') || lower.includes('alfredo') || lower.includes('bolognese') || lower.includes('italian')) {
+            return [
+                '16 oz Pasta (spaghetti or penne)',
+                '28 oz San Marzano tomatoes',
+                '1 lb Ground beef / Italian sausage',
+                '1x Yellow onion & garlic bulb',
+                '8 oz Parmigiano-Reggiano',
+                '1 bunch Fresh basil',
+                '1 loaf Crusty garlic bread'
+            ];
+        }
+        if (lower.includes('stir fry') || lower.includes('teriyaki') || lower.includes('fried rice') || lower.includes('ramen') || lower.includes('asian') || lower.includes('thai')) {
+            return [
+                '1.5 lbs Chicken breast or firm tofu',
+                '2 heads Broccoli crowns',
+                '2x Red bell peppers',
+                '1 bunch Scallions (green onions)',
+                '1 bottle Soy sauce & sesame oil',
+                '2x Fresh ginger & garlic',
+                '2 lbs Jasmine rice'
+            ];
+        }
+        if (lower.includes('burger') || lower.includes('bbq') || lower.includes('grill') || lower.includes('cookout')) {
+            return [
+                '2 lbs Ground chuck (80/20)',
+                '1 pack Brioche burger buns (8)',
+                '1 pack Sliced sharp cheddar',
+                '1 head Crisp iceberg lettuce',
+                '2x Vine-ripened tomatoes',
+                '1x Red onion',
+                '1 jar Dill pickle chips'
+            ];
+        }
+        if (lower.includes('breakfast') || lower.includes('brunch') || lower.includes('pancake') || lower.includes('waffle') || lower.includes('omelet')) {
+            return [
+                'Eggs (12)',
+                '1 pack Thick-cut bacon',
+                '1 gal Whole milk',
+                '1 loaf Sourdough bread',
+                '2x Avocados',
+                '1 pint Fresh blueberries',
+                '1 bag Coffee beans'
+            ];
+        }
+        if (lower.includes('salad') || lower.includes('healthy') || lower.includes('meal prep')) {
+            return [
+                '2 boxes Mixed baby greens',
+                '2x English cucumbers',
+                '1 pint Cherry tomatoes',
+                '3x Avocados',
+                '1.5 lbs Chicken breast',
+                '6 oz Feta or goat cheese',
+                '1 bottle Extra-virgin olive oil'
+            ];
+        }
+
+        // Default weekly grocery staples with smart quantity badges
+        return [
+            '1 gal Milk',
+            'Eggs (12)',
+            '1 loaf Sourdough bread',
+            '2x Avocados',
+            '1.5 lbs Chicken breast',
+            '1 bag Fresh spinach',
+            '1 bunch Bananas',
+            '1 lb Salted butter'
+        ];
+    }
+
     function extractGeminiErrorMessage(errData, statusCode) {
         const raw = errData?.error?.message || (Array.isArray(errData) && errData[0]?.error?.message) || '';
         if (statusCode === 402 || raw.toLowerCase().includes('prepayment credits are depleted')) {
@@ -2133,13 +2415,23 @@ app.prepare().then(() => {
     });
 
     expressApp.post('/api/tasks/decompose', async (req, res) => {
-        const { title, apiKey: clientKey } = req.body;
+        const { title, apiKey: clientKey, mode = 'task' } = req.body;
         if (!title || typeof title !== 'string' || !title.trim()) {
             return res.status(400).json({ error: 'title is required' });
         }
         const goal = title.trim();
+        const isGroceryMode = mode === 'grocery';
+        const maxItems = isGroceryMode ? 10 : 6;
 
-        const promptText = `You are an expert practical organizer and project breakdown assistant for a physical thermal task receipt system.
+        const promptText = isGroceryMode
+            ? `You are an expert chef and smart grocery shopping assistant for a physical thermal receipt list app.
+Generate 6 to 8 essential grocery shopping items needed for the following meal, recipe, or shopping trip.
+Format each item with a concise quantity prefix or suffix so the app can render a quantity badge (e.g. "2 lbs Chicken thighs", "1 can Coconut milk", "Eggs (12)", "3x Avocados", "1 bunch Fresh cilantro").
+Keep each string under 38 characters.
+Return ONLY a valid JSON array of strings. No markdown formatting, no commentary.
+
+Meal or Shopping Theme: "${goal}"`
+            : `You are an expert practical organizer and project breakdown assistant for a physical thermal task receipt system.
 Break down the following goal or task into 3 to 5 clear, concrete, sequential, actionable steps.
 Each step must be short (under 45 characters, ideally starting with an action verb) so it fits neatly on a narrow thermal chit.
 Return ONLY a valid JSON array of strings, e.g. ["Step 1", "Step 2", "Step 3"]. No markdown formatting, no commentary.
@@ -2198,7 +2490,7 @@ Goal: "${goal}"`;
                         if (Array.isArray(parsed) && parsed.length > 0) {
                             return res.json({
                                 title: goal,
-                                subtasks: parsed.slice(0, 6).map(String),
+                                subtasks: parsed.slice(0, maxItems).map(String),
                                 source: 'gemini',
                                 model: geminiModel
                             });
@@ -2233,7 +2525,9 @@ Goal: "${goal}"`;
                         messages: [
                             {
                                 role: 'system',
-                                content: 'Break down the user goal into 3 to 5 short, concrete, sequential actionable steps (under 45 chars each). Return ONLY a JSON array of strings.'
+                                content: isGroceryMode
+                                    ? 'Generate 6 to 8 grocery shopping ingredients with concise quantities (e.g. "2 lbs Chicken thighs", "Eggs (12)"). Return ONLY a JSON array of strings.'
+                                    : 'Break down the user goal into 3 to 5 short, concrete, sequential actionable steps (under 45 chars each). Return ONLY a JSON array of strings.'
                             },
                             { role: 'user', content: goal }
                         ]
@@ -2249,7 +2543,7 @@ Goal: "${goal}"`;
                         if (Array.isArray(list) && list.length > 0) {
                             return res.json({
                                 title: goal,
-                                subtasks: list.slice(0, 6).map(String),
+                                subtasks: list.slice(0, maxItems).map(String),
                                 source: 'openai',
                                 model: 'gpt-4o-mini'
                             });
@@ -2262,7 +2556,7 @@ Goal: "${goal}"`;
         }
 
         // 3. Fallback: Intelligent semantic heuristic engine (with explicit aiError metadata so UI does not fail silently)
-        const subtasks = generateHeuristicSubtasks(goal);
+        const subtasks = isGroceryMode ? generateHeuristicGroceryItems(goal) : generateHeuristicSubtasks(goal);
         res.json({
             title: goal,
             subtasks,

@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogClose } from '@/components/ui/dialog';
-import { useTaskStore, useTask } from '@/lib/store';
-import { Sparkles, Printer, Plus, Trash2, AlertTriangle, X, Loader2 } from 'lucide-react';
-import { getPrintServerUrl, cn } from '@/lib/utils';
+import { useTaskStore, useTask, isGroceryList } from '@/lib/store';
+import { Sparkles, Printer, Plus, Trash2, AlertTriangle, X, Loader2, ShoppingCart } from 'lucide-react';
+import { getPrintServerUrl, cn, printGroceryListReceipt } from '@/lib/utils';
 import { toast } from 'sonner';
 
 interface DecomposeModalProps {
@@ -12,6 +12,7 @@ interface DecomposeModalProps {
     onOpenChange: (open: boolean) => void;
     taskId?: string | null;
     initialTitle?: string;
+    initialMode?: 'task' | 'grocery';
 }
 
 interface StepItem {
@@ -24,12 +25,16 @@ export function DecomposeModal({
     open,
     onOpenChange,
     taskId,
-    initialTitle = ''
+    initialTitle = '',
+    initialMode
 }: DecomposeModalProps) {
     const task = useTask(taskId);
+    const addTask = useTaskStore((state) => state.addTask);
     const addTasksBatch = useTaskStore((state) => state.addTasksBatch);
+    const selectTask = useTaskStore((state) => state.selectTask);
     const qrOnChits = useTaskStore((state) => state.qrOnChits);
 
+    const [mode, setMode] = useState<'task' | 'grocery'>('task');
     const [goal, setGoal] = useState('');
     const [steps, setSteps] = useState<StepItem[]>([]);
     const [loading, setLoading] = useState(false);
@@ -40,22 +45,25 @@ export function DecomposeModal({
 
     useEffect(() => {
         if (open) {
+            const resolvedMode = initialMode || (isGroceryList(task) ? 'grocery' : 'task');
+            setMode(resolvedMode);
             const currentTitle = initialTitle || task?.title || '';
             setGoal(currentTitle);
             setAiError(null);
             setAiSource(null);
             if (currentTitle) {
-                handleDecompose(currentTitle);
+                handleDecompose(currentTitle, resolvedMode);
             }
         } else {
             setSteps([]);
             setAiError(null);
             setAiSource(null);
         }
-    }, [open, initialTitle, task?.title]);
+    }, [open, initialTitle, task?.title, initialMode]);
 
-    const handleDecompose = async (targetGoal?: string) => {
-        const query = (targetGoal || goal).trim();
+    const handleDecompose = async (targetGoal?: string, targetMode?: 'task' | 'grocery') => {
+        const query = (targetGoal ?? goal).trim();
+        const activeMode = targetMode ?? mode;
         if (!query) return;
 
         setLoading(true);
@@ -64,7 +72,7 @@ export function DecomposeModal({
             const res = await fetch('/api/tasks/decompose', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: query })
+                body: JSON.stringify({ title: query, mode: activeMode })
             });
 
             if (res.ok) {
@@ -119,12 +127,28 @@ export function DecomposeModal({
     const selectedStepTexts = steps.filter(s => s.selected && s.text.trim()).map(s => s.text.trim());
 
     const handleAddToBoard = () => {
-        const targetParentId = taskId || 'root';
         if (selectedStepTexts.length === 0) {
-            toast.error("Please select at least one step");
+            toast.error(mode === 'grocery' ? "Please select at least one ingredient" : "Please select at least one step");
             return [];
         }
 
+        if (mode === 'grocery') {
+            // If we're already inside a Grocery List, add items directly to it; otherwise create a new Grocery List
+            let targetListId = taskId && task && isGroceryList(task) ? taskId : null;
+            if (!targetListId) {
+                const listTitle = goal.trim() || 'Grocery List';
+                targetListId = addTask('root', listTitle, undefined, 'grocery');
+            }
+            if (targetListId) {
+                const created = addTasksBatch(targetListId, selectedStepTexts);
+                selectTask(targetListId);
+                toast.success(`Added ${selectedStepTexts.length} items to Grocery List!`);
+                onOpenChange(false);
+                return created;
+            }
+        }
+
+        const targetParentId = taskId || 'root';
         const created = addTasksBatch(targetParentId, selectedStepTexts);
         toast.success(`Added ${selectedStepTexts.length} subtasks to "${goal || 'Task'}"!`);
         onOpenChange(false);
@@ -133,12 +157,25 @@ export function DecomposeModal({
 
     const handlePrintOnly = async (createdTasks?: { id: string; title: string }[]) => {
         if (selectedStepTexts.length === 0) {
-            toast.error("Please select at least one step");
+            toast.error(mode === 'grocery' ? "Please select at least one ingredient" : "Please select at least one step");
             return;
         }
 
         setPrinting(true);
         try {
+            if (mode === 'grocery') {
+                const res = await printGroceryListReceipt(
+                    goal.trim() || task?.title || 'Grocery List',
+                    selectedStepTexts.map(title => ({ title, completed: false }))
+                );
+                if (res.ok) {
+                    toast.success("Grocery list receipt sent to thermal printer!");
+                } else {
+                    toast.warning("Thermal printer offline (Grocery receipt simulated)");
+                }
+                return;
+            }
+
             const printServerUrl = getPrintServerUrl();
             const host = typeof window !== 'undefined' ? window.location.origin : '';
 
@@ -168,7 +205,7 @@ export function DecomposeModal({
                 toast.warning(errData.error ? `Print warning: ${errData.error}` : "Thermal printer offline (Action plan simulated)");
             }
         } catch {
-            toast.warning("Thermal printer offline (Action plan simulated)");
+            toast.warning("Thermal printer offline (Print simulated)");
         } finally {
             setPrinting(false);
         }
@@ -184,14 +221,20 @@ export function DecomposeModal({
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent showCloseButton={false} aria-describedby={undefined} className="sm:max-w-lg bg-card text-foreground p-0 border border-zinc-200 dark:border-zinc-800 shadow-2xl rounded-2xl overflow-hidden font-mono">
-                <DialogTitle className="sr-only">AI Task Decomposer</DialogTitle>
+                <DialogTitle className="sr-only">
+                    {mode === 'grocery' ? 'AI Recipe & Grocery Generator' : 'AI Task Decomposer'}
+                </DialogTitle>
 
                 {/* Header */}
-                <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-100/70 dark:bg-zinc-900/50">
-                    <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
-                        <Sparkles size={18} className="motion-safe:animate-pulse" />
-                        <span className="font-bold text-sm tracking-wider uppercase text-zinc-900 dark:text-zinc-100">
-                            AI Task Decomposer
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-100/70 dark:bg-zinc-900/50 gap-2">
+                    <div className="flex items-center gap-2">
+                        {mode === 'grocery' ? (
+                            <ShoppingCart size={17} className="text-emerald-600 dark:text-emerald-400" />
+                        ) : (
+                            <Sparkles size={17} className="text-amber-600 dark:text-amber-400 motion-safe:animate-pulse" />
+                        )}
+                        <span className="font-bold text-xs sm:text-sm tracking-wider uppercase text-zinc-900 dark:text-zinc-100">
+                            {mode === 'grocery' ? 'Recipe-to-Grocery AI' : 'AI Task Decomposer'}
                         </span>
                         {aiSource === 'gemini' && (
                             <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 uppercase">
@@ -204,9 +247,47 @@ export function DecomposeModal({
                             </span>
                         )}
                     </div>
-                    <DialogClose aria-label="Close decomposer" className="opacity-70 hover:opacity-100 transition-opacity p-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-white">
-                        <X size={16} />
-                    </DialogClose>
+
+                    <div className="flex items-center gap-1.5">
+                        {/* Mode Switcher */}
+                        <div className="flex items-center bg-zinc-200/80 dark:bg-zinc-800 p-0.5 rounded-lg text-[10px] font-bold">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setMode('task');
+                                    if (goal.trim()) handleDecompose(goal, 'task');
+                                }}
+                                className={cn(
+                                    "px-2 py-1 rounded-md transition-colors",
+                                    mode === 'task'
+                                        ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs"
+                                        : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+                                )}
+                            >
+                                Tasks
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setMode('grocery');
+                                    if (goal.trim()) handleDecompose(goal, 'grocery');
+                                }}
+                                className={cn(
+                                    "px-2 py-1 rounded-md transition-colors flex items-center gap-1",
+                                    mode === 'grocery'
+                                        ? "bg-emerald-600 text-white shadow-xs"
+                                        : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+                                )}
+                            >
+                                <ShoppingCart size={10} />
+                                <span>Grocery</span>
+                            </button>
+                        </div>
+
+                        <DialogClose aria-label="Close decomposer" className="opacity-70 hover:opacity-100 transition-opacity p-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-white">
+                            <X size={16} />
+                        </DialogClose>
+                    </div>
                 </div>
 
                 {/* Body */}
@@ -221,10 +302,10 @@ export function DecomposeModal({
                         </div>
                     )}
 
-                    {/* Goal Input */}
+                    {/* Goal / Recipe Input */}
                     <div>
                         <label htmlFor="decompose-goal-input" className="text-[10px] font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider block mb-1.5">
-                            Goal / Complex Task
+                            {mode === 'grocery' ? 'Meal, Recipe, or Shopping Theme' : 'Goal / Complex Task'}
                         </label>
                         <div className="flex gap-2">
                             <input
@@ -237,26 +318,40 @@ export function DecomposeModal({
                                         handleDecompose();
                                     }
                                 }}
-                                placeholder="e.g. Fix garage door spring, Plan team offsite..."
-                                className="flex-1 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-3 py-2 text-sm font-mono text-zinc-900 dark:text-zinc-100 outline-none focus:border-amber-500/60"
+                                placeholder={
+                                    mode === 'grocery'
+                                        ? "e.g. Chicken Tikka Masala, Taco Night, Weekly Staples..."
+                                        : "e.g. Fix garage door spring, Plan team offsite..."
+                                }
+                                className={cn(
+                                    "flex-1 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-3 py-2 text-sm font-mono text-zinc-900 dark:text-zinc-100 outline-none",
+                                    mode === 'grocery' ? "focus:border-emerald-500/60" : "focus:border-amber-500/60"
+                                )}
                             />
                             <button
                                 type="button"
                                 onClick={() => handleDecompose()}
                                 disabled={loading || !goal.trim()}
-                                className="px-3.5 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                                className={cn(
+                                    "px-3.5 py-2 border rounded-lg font-bold text-xs flex items-center gap-1.5 transition-colors disabled:opacity-50",
+                                    mode === 'grocery'
+                                        ? "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"
+                                        : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-400 border-amber-500/30"
+                                )}
                             >
                                 {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                                <span>Analyze</span>
+                                <span>{mode === 'grocery' ? 'Get Ingredients' : 'Analyze'}</span>
                             </button>
                         </div>
                     </div>
 
-                    {/* Breakdown List */}
+                    {/* Breakdown / Ingredients List */}
                     <div>
                         <div className="flex items-center justify-between mb-2">
                             <span className="text-[10px] font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider">
-                                Action Steps ({selectedStepTexts.length}/{steps.length} selected)
+                                {mode === 'grocery'
+                                    ? `Grocery Items (${selectedStepTexts.length}/${steps.length} selected)`
+                                    : `Action Steps (${selectedStepTexts.length}/${steps.length} selected)`}
                             </span>
                             <button
                                 type="button"
@@ -264,18 +359,22 @@ export function DecomposeModal({
                                 className="text-[10px] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 flex items-center gap-1"
                             >
                                 <Plus size={11} />
-                                <span>Add Step</span>
+                                <span>{mode === 'grocery' ? 'Add Item' : 'Add Step'}</span>
                             </button>
                         </div>
 
                         {loading ? (
                             <div className="py-8 text-center space-y-2 border border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
-                                <Loader2 size={24} className="animate-spin text-amber-500 mx-auto" />
-                                <p className="text-xs text-zinc-500 dark:text-zinc-400">Synthesizing sequential action steps...</p>
+                                <Loader2 size={24} className={cn("animate-spin mx-auto", mode === 'grocery' ? "text-emerald-500" : "text-amber-500")} />
+                                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                    {mode === 'grocery' ? 'Gathering recipe ingredients & quantities...' : 'Synthesizing sequential action steps...'}
+                                </p>
                             </div>
                         ) : steps.length === 0 ? (
                             <div className="py-8 text-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl text-xs text-zinc-500 dark:text-zinc-400">
-                                Enter a goal above and click Analyze to generate steps
+                                {mode === 'grocery'
+                                    ? 'Enter a meal or shopping theme above and click Get Ingredients'
+                                    : 'Enter a goal above and click Analyze to generate steps'}
                             </div>
                         ) : (
                             <div className="space-y-1.5">
@@ -291,23 +390,23 @@ export function DecomposeModal({
                                     >
                                         <input
                                             type="checkbox"
-                                            aria-label={`Select step ${idx + 1}`}
+                                            aria-label={`Select item ${idx + 1}`}
                                             checked={step.selected}
                                             onChange={() => handleToggleStep(step.id)}
-                                            className="w-4 h-4 rounded border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-amber-500 cursor-pointer"
+                                            className="w-4 h-4 rounded border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-emerald-600 cursor-pointer"
                                         />
                                         <span className="text-[11px] text-zinc-500 font-bold shrink-0">
                                             {idx + 1}.
                                         </span>
                                         <input
-                                            aria-label={`Step ${idx + 1} description`}
+                                            aria-label={`Item ${idx + 1} description`}
                                             value={step.text}
                                             onChange={(e) => handleUpdateText(step.id, e.target.value)}
                                             className="flex-1 bg-transparent border-none outline-none text-xs font-mono text-zinc-900 dark:text-zinc-200"
                                         />
                                         <button
                                             type="button"
-                                            aria-label={`Remove step ${idx + 1}`}
+                                            aria-label={`Remove item ${idx + 1}`}
                                             onClick={() => handleRemoveStep(step.id)}
                                             className="p-1 text-zinc-500 hover:text-red-500 rounded transition-colors"
                                         >
@@ -329,7 +428,7 @@ export function DecomposeModal({
                         className="px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5 transition-colors disabled:opacity-50"
                     >
                         <Printer size={13} />
-                        <span>Print Tear-Off Ticket</span>
+                        <span>{mode === 'grocery' ? 'Print Grocery Receipt' : 'Print Tear-Off Ticket'}</span>
                     </button>
 
                     <div className="flex items-center gap-2">
@@ -339,16 +438,21 @@ export function DecomposeModal({
                             disabled={selectedStepTexts.length === 0}
                             className="px-3.5 py-2 rounded-lg bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-xs font-bold text-zinc-900 dark:text-white transition-colors disabled:opacity-50"
                         >
-                            Add to Board
+                            {mode === 'grocery' ? 'Add to Grocery List' : 'Add to Board'}
                         </button>
                         <button
                             type="button"
                             onClick={handleAddAndPrint}
                             disabled={selectedStepTexts.length === 0 || printing}
-                            className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 transition-transform active:scale-95 disabled:opacity-50"
+                            className={cn(
+                                "px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-transform active:scale-95 disabled:opacity-50",
+                                mode === 'grocery'
+                                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                                    : "bg-amber-500 hover:bg-amber-400 text-zinc-950"
+                            )}
                         >
-                            <Sparkles size={13} />
-                            <span>Add & Print Both</span>
+                            {mode === 'grocery' ? <ShoppingCart size={13} /> : <Sparkles size={13} />}
+                            <span>Add & Print Receipt</span>
                         </button>
                     </div>
                 </div>

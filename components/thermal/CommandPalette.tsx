@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { useTaskStore, Task } from '@/lib/store';
-import { Search, Printer, Volume2, VolumeX, Sparkles, CheckCircle2, LayoutGrid, Columns, ArrowRight, CornerDownLeft, QrCode } from 'lucide-react';
+import { useTaskStore, Task, isGroceryList } from '@/lib/store';
+import { Search, Printer, Volume2, VolumeX, Sparkles, CheckCircle2, LayoutGrid, Columns, ArrowRight, CornerDownLeft, QrCode, ShoppingCart } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { DecomposeModal } from './DecomposeModal';
@@ -23,6 +23,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     const selectedTaskId = useTaskStore((state) => state.selectedTaskId);
     const selectTask = useTaskStore((state) => state.selectTask);
     const toggleTask = useTaskStore((state) => state.toggleTask);
+    const addTask = useTaskStore((state) => state.addTask);
 
     const viewMode = useTaskStore((state) => state.viewMode);
     const setViewMode = useTaskStore((state) => state.setViewMode);
@@ -73,6 +74,26 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     const actionResults = useMemo(() => {
         const q = query.trim().toLowerCase();
         const actions = [
+            {
+                id: 'create-grocery-list',
+                title: 'New Grocery Shopping List (or open active Grocery List)',
+                icon: <ShoppingCart size={16} className="text-emerald-500" />,
+                run: () => {
+                    const rootChildren = tasks['root']?.children || [];
+                    const existingId = rootChildren.find(cid => {
+                        const t = tasks[cid];
+                        return t && !t.completed && isGroceryList(t);
+                    });
+                    if (existingId) {
+                        selectTask(existingId);
+                        toast.info(`Opened "${tasks[existingId].title}"`);
+                    } else {
+                        const newId = addTask('root', 'Grocery List', undefined, 'grocery');
+                        if (newId) selectTask(newId);
+                        toast.success('Created "Grocery List"!');
+                    }
+                }
+            },
             {
                 id: 'toggle-autoprint',
                 title: `Auto-Print on Task Add: ${autoPrintEnabled ? 'ENABLED (Click to Turn Off)' : 'DISABLED (Click to Turn On)'}`,

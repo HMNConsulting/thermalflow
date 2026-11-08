@@ -1,6 +1,6 @@
 'use client';
 
-import { useTaskStore } from "@/lib/store";
+import { useTaskStore, isGroceryList } from "@/lib/store";
 import { useMemo, useState } from "react";
 import { CheckCircle2, RotateCcw, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -26,7 +26,13 @@ export function CompletedColumn() {
         }
 
         return Object.values(tasks)
-            .filter(t => t.completed && t.id !== 'root' && reachable.has(t.id))
+            .filter(t => {
+                if (!t.completed || t.id === 'root' || !reachable.has(t.id)) return false;
+                // Keep checked grocery items inside their active Grocery List rather than cluttering Completed column
+                const parent = t.parentId ? tasks[t.parentId] : undefined;
+                if (parent && !parent.completed && isGroceryList(parent)) return false;
+                return true;
+            })
             .filter(t => !activeFilters.creator || t.createdBy === activeFilters.creator)
             .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
     }, [tasks, activeFilters.creator]);
