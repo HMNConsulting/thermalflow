@@ -172,7 +172,7 @@ export const TaskItem = memo(function TaskItem({
             }}
             onClick={() => onSelect(task.id)}
             className={cn(
-                "group flex items-center justify-between p-2 rounded text-sm cursor-pointer border border-transparent transition-colors relative overflow-hidden select-none",
+                "group flex items-center justify-between gap-2 p-2 rounded text-sm cursor-pointer border border-transparent transition-colors relative overflow-hidden select-none",
                 isPathActive ? "bg-zinc-200/80 dark:bg-zinc-800" : "hover:bg-zinc-100 dark:hover:bg-zinc-900",
                 isGrocery && !isSelected && "border-l-2 border-l-emerald-600 dark:border-l-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-100/50 dark:hover:bg-emerald-950/35",
                 isSelected && "ring-2 ring-zinc-900 dark:ring-zinc-100 ring-inset bg-zinc-100/70 dark:bg-zinc-900 z-10",
@@ -210,7 +210,7 @@ export const TaskItem = memo(function TaskItem({
                 )}
 
                 <div
-                    className="p-1.5 -m-1.5 touch-manipulation flex items-center justify-center"
+                    className="p-1.5 -m-1.5 touch-manipulation flex items-center justify-center shrink-0"
                     onClick={(e) => {
                         e.stopPropagation();
                         toggleTask(task.id);
@@ -236,18 +236,20 @@ export const TaskItem = memo(function TaskItem({
                         onBlur={handleSaveEdit}
                         onKeyDown={handleKeyDown}
                         onClick={(e) => e.stopPropagation()}
-                        className="flex-1 bg-white dark:bg-zinc-950 border border-zinc-400 dark:border-zinc-600 rounded px-2 py-0.5 text-sm font-mono outline-none focus:ring-1 ring-zinc-900 dark:ring-zinc-100"
+                        className="flex-1 min-w-0 bg-white dark:bg-zinc-950 border border-zinc-400 dark:border-zinc-600 rounded px-2 py-0.5 text-sm font-mono outline-none focus:ring-1 ring-zinc-900 dark:ring-zinc-100"
                     />
                 ) : (
-                    <span
+                    <div
                         onDoubleClick={handleStartEdit}
                         className={cn(
-                            "font-mono text-base break-words leading-tight flex-1 flex items-center gap-2",
+                            "font-mono text-base leading-tight flex-1 min-w-0 flex items-center gap-2",
                             task.completed && "line-through text-zinc-500 dark:text-zinc-400"
                         )}
                         title="Double-click to edit"
                     >
-                        <span>{parsedGroceryDisplay ? parsedGroceryDisplay.name : task.title}</span>
+                        <span className="break-words min-w-0 flex-1">
+                            {parsedGroceryDisplay ? parsedGroceryDisplay.name : task.title}
+                        </span>
                         {parsedGroceryDisplay?.quantity && (
                             <span className={cn(
                                 "text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-500/25 shrink-0",
@@ -256,128 +258,140 @@ export const TaskItem = memo(function TaskItem({
                                 {parsedGroceryDisplay.quantity}
                             </span>
                         )}
-                    </span>
+                    </div>
                 )}
             </div>
 
-            {/* Grocery List Badge */}
-            {isGrocery && (
-                <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ml-1 bg-emerald-600/15 text-emerald-800 dark:text-emerald-300 border border-emerald-500/25 shrink-0">
-                    {progress ? `${progress.total - progress.completed} left` : 'LIST'}
-                </span>
-            )}
-
-            {/* Priority Badge */}
-            {task.priority && task.priority !== 'normal' && (
-                <button
-                    type="button"
-                    onClick={handleCyclePriority}
-                    aria-label={`Priority ${task.priority}. Click to cycle`}
-                    title={`Priority: ${task.priority.toUpperCase()} - Click to cycle`}
-                    className={cn(
-                        "text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ml-1",
-                        task.priority === 'urgent'
-                            ? "bg-red-600 text-white motion-safe:animate-pulse"
-                            : "bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30"
-                    )}
-                >
-                    {task.priority}
-                </button>
-            )}
-
-            {/* Progress Metadata (for non-grocery tasks) */}
-            {!isGrocery && progress && (
-                <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-mono ml-2 shrink-0">
-                    {progress.formatted}
-                </span>
-            )}
-
-            {/* Quick Actions (Hover) */}
-            <div className="flex items-center gap-1 ml-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity">
-                {/* Print chit or consolidated Grocery Receipt */}
-                <button
-                    type="button"
-                    aria-label={isGrocery ? `Print grocery receipt for ${task.title}` : `Print chit for ${task.title}`}
-                    onClick={handlePrintSingle}
-                    disabled={isPrinting}
-                    className={cn(
-                        "p-2 md:p-1 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100",
-                        isGrocery && "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15"
-                    )}
-                    title={isGrocery ? "Print consolidated Grocery List receipt" : "Print task chit (ESC/POS)"}
-                >
-                    <Printer size={13} className={isPrinting ? 'animate-spin' : ''} />
-                </button>
-
-                {/* AI Sparkle Decompose / Recipe-to-Grocery */}
-                <button
-                    type="button"
-                    aria-label={isGrocery ? `Generate recipe ingredients for "${task.title}"` : `Decompose "${task.title}" with AI`}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        setIsDecomposeOpen(true);
-                    }}
-                    className="p-2 md:p-1 hover:bg-amber-100 dark:hover:bg-amber-950/40 text-zinc-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
-                    title={isGrocery ? "AI Recipe-to-Grocery: Generate ingredients" : "AI Sparkle: Decompose goal into subtasks & print checklist"}
-                >
-                    <Sparkles size={13} />
-                </button>
-
-                {/* Toggle Grocery List Type (for top-level tasks) */}
-                {task.parentId === 'root' && (
-                    <button
-                        type="button"
-                        aria-label={isGrocery ? `Convert "${task.title}" to standard task` : `Convert "${task.title}" to Grocery List`}
-                        onClick={handleToggleGroceryType}
-                        className={cn(
-                            "p-2 md:p-1 rounded transition-colors hidden sm:block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
-                            isGrocery
-                                ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20"
-                                : "text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 hover:text-emerald-600 dark:hover:text-emerald-400"
-                        )}
-                        title={isGrocery ? "Convert to normal task" : "Convert to Grocery Shopping List"}
-                    >
-                        <ShoppingCart size={13} />
-                    </button>
+            {/* Right-side Metadata & Actions */}
+            <div className="flex items-center gap-1.5 shrink-0">
+                {/* Grocery List Badge (hides on hover/selected when action toolbar is shown so title has full space) */}
+                {isGrocery && (
+                    <span className={cn(
+                        "text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-emerald-600/15 text-emerald-800 dark:text-emerald-300 border border-emerald-500/25 shrink-0",
+                        isSelected ? "hidden" : "md:group-hover:hidden md:group-focus-within:hidden"
+                    )}>
+                        {progress ? `${progress.total - progress.completed} left` : 'LIST'}
+                    </span>
                 )}
 
-                {/* Edit Title */}
-                <button
-                    type="button"
-                    aria-label={`Rename "${task.title}"`}
-                    onClick={handleStartEdit}
-                    className="p-2 md:p-1 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 rounded transition-colors hidden sm:block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
-                    title="Rename task (or double click)"
-                >
-                    <Edit2 size={13} />
-                </button>
-
-                {/* Priority toggle (hidden for grocery sub-items to keep row clean) */}
-                {!isGroceryChild && (
+                {/* Priority Badge */}
+                {task.priority && task.priority !== 'normal' && (
                     <button
                         type="button"
-                        aria-label={`Cycle priority for "${task.title}"`}
                         onClick={handleCyclePriority}
-                        className="p-2 md:p-1 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
-                        title="Set Priority (!urgent / !high)"
+                        aria-label={`Priority ${task.priority}. Click to cycle`}
+                        title={`Priority: ${task.priority.toUpperCase()} - Click to cycle`}
+                        className={cn(
+                            "text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0",
+                            task.priority === 'urgent'
+                                ? "bg-red-600 text-white motion-safe:animate-pulse"
+                                : "bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30"
+                        )}
                     >
-                        <AlertCircle size={13} />
+                        {task.priority}
                     </button>
                 )}
 
-                {/* Delete */}
-                <button
-                    type="button"
-                    aria-label={`Delete "${task.title}"`}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        deleteTask(task.id);
-                    }}
-                    className="p-2 md:p-1 ml-0.5 hover:bg-red-100 dark:hover:bg-red-900/30 text-zinc-500 dark:text-zinc-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
-                    title="Delete task"
-                >
-                    <Trash2 size={13} />
-                </button>
+                {/* Progress Metadata (for non-grocery tasks) */}
+                {!isGrocery && progress && (
+                    <span className={cn(
+                        "text-[10px] text-zinc-500 dark:text-zinc-400 font-mono shrink-0",
+                        isSelected ? "hidden" : "md:group-hover:hidden md:group-focus-within:hidden"
+                    )}>
+                        {progress.formatted}
+                    </span>
+                )}
+
+                {/* Quick Actions (Collapsed when idle so text & badges never collide) */}
+                <div className={cn(
+                    "items-center gap-0.5",
+                    isSelected ? "flex" : "hidden md:group-hover:flex md:group-focus-within:flex"
+                )}>
+                    {/* Print chit or consolidated Grocery Receipt */}
+                    <button
+                        type="button"
+                        aria-label={isGrocery ? `Print grocery receipt for ${task.title}` : `Print chit for ${task.title}`}
+                        onClick={handlePrintSingle}
+                        disabled={isPrinting}
+                        className={cn(
+                            "p-1.5 md:p-1 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100",
+                            isGrocery && "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15"
+                        )}
+                        title={isGrocery ? "Print consolidated Grocery List receipt" : "Print task chit (ESC/POS)"}
+                    >
+                        <Printer size={13} className={isPrinting ? 'animate-spin' : ''} />
+                    </button>
+
+                    {/* AI Sparkle Decompose / Recipe-to-Grocery */}
+                    <button
+                        type="button"
+                        aria-label={isGrocery ? `Generate recipe ingredients for "${task.title}"` : `Decompose "${task.title}" with AI`}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setIsDecomposeOpen(true);
+                        }}
+                        className="p-1.5 md:p-1 hover:bg-amber-100 dark:hover:bg-amber-950/40 text-zinc-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
+                        title={isGrocery ? "AI Recipe-to-Grocery: Generate ingredients" : "AI Sparkle: Decompose goal into subtasks & print checklist"}
+                    >
+                        <Sparkles size={13} />
+                    </button>
+
+                    {/* Toggle Grocery List Type (for top-level tasks) */}
+                    {task.parentId === 'root' && (
+                        <button
+                            type="button"
+                            aria-label={isGrocery ? `Convert "${task.title}" to standard task` : `Convert "${task.title}" to Grocery List`}
+                            onClick={handleToggleGroceryType}
+                            className={cn(
+                                "p-1.5 md:p-1 rounded transition-colors hidden sm:block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
+                                isGrocery
+                                    ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20"
+                                    : "text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 hover:text-emerald-600 dark:hover:text-emerald-400"
+                            )}
+                            title={isGrocery ? "Convert to normal task" : "Convert to Grocery Shopping List"}
+                        >
+                            <ShoppingCart size={13} />
+                        </button>
+                    )}
+
+                    {/* Edit Title */}
+                    <button
+                        type="button"
+                        aria-label={`Rename "${task.title}"`}
+                        onClick={handleStartEdit}
+                        className="p-1.5 md:p-1 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 rounded transition-colors hidden sm:block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
+                        title="Rename task (or double click)"
+                    >
+                        <Edit2 size={13} />
+                    </button>
+
+                    {/* Priority toggle (hidden for grocery sub-items to keep row clean) */}
+                    {!isGroceryChild && (
+                        <button
+                            type="button"
+                            aria-label={`Cycle priority for "${task.title}"`}
+                            onClick={handleCyclePriority}
+                            className="p-1.5 md:p-1 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
+                            title="Set Priority (!urgent / !high)"
+                        >
+                            <AlertCircle size={13} />
+                        </button>
+                    )}
+
+                    {/* Delete */}
+                    <button
+                        type="button"
+                        aria-label={`Delete "${task.title}"`}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            deleteTask(task.id);
+                        }}
+                        className="p-1.5 md:p-1 ml-0.5 hover:bg-red-100 dark:hover:bg-red-900/30 text-zinc-500 dark:text-zinc-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                        title="Delete task"
+                    >
+                        <Trash2 size={13} />
+                    </button>
+                </div>
             </div>
 
             {isDecomposeOpen && (

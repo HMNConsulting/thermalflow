@@ -31,7 +31,7 @@ export default function GlobalTaskInput() {
     const inputRef = useRef<HTMLInputElement>(null);
 
     const parentIsGrocery = isGroceryList(selectedTask);
-    const effectiveGroceryMode = parentIsGrocery || groceryModeToggle;
+    const effectiveGroceryMode = parentIsGrocery || (!selectedTask && groceryModeToggle);
 
     const printSingleTask = async (taskTitle: string, taskId?: string) => {
         if (!autoPrintEnabled) return;
@@ -164,6 +164,39 @@ export default function GlobalTaskInput() {
 
     return (
         <div className="fixed bottom-4 sm:bottom-8 left-1/2 -translate-x-1/2 w-full max-w-xl px-3 sm:px-4 z-40">
+            {/* Graceful Context Pill Banner Above the Footer Bar when a parent task is selected */}
+            {selectedTask && (
+                <div className="flex justify-start mb-1.5 px-1 animate-in fade-in slide-in-from-bottom-1 duration-150">
+                    <div
+                        className={cn(
+                            "inline-flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-lg border text-xs font-mono shadow-md backdrop-blur-md max-w-full",
+                            parentIsGrocery
+                                ? "bg-emerald-950/90 dark:bg-emerald-950/90 border-emerald-500/40 text-emerald-200"
+                                : "bg-zinc-900/90 dark:bg-zinc-900/95 border-zinc-700/80 text-zinc-200"
+                        )}
+                    >
+                        {parentIsGrocery ? (
+                            <ShoppingCart size={12} className="text-emerald-400 shrink-0" />
+                        ) : (
+                            <CornerDownRight size={12} className="text-zinc-400 shrink-0" />
+                        )}
+                        <span className="text-[10px] uppercase tracking-wider opacity-70 shrink-0">
+                            {parentIsGrocery ? 'List:' : 'Sub-task of:'}
+                        </span>
+                        <span className="font-bold truncate">{selectedTask.title}</span>
+                        <button
+                            type="button"
+                            aria-label="Deselect parent task"
+                            onClick={() => selectTask(null)}
+                            className="p-0.5 hover:bg-white/15 rounded transition-colors ml-0.5 shrink-0 text-zinc-400 hover:text-white"
+                            title="Return to root (ESC)"
+                        >
+                            <X size={13} />
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <div className={cn(
                 "bg-card border-2 shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.5)] rounded-xl p-1.5 sm:p-2 transition-colors group",
                 effectiveGroceryMode
@@ -172,25 +205,6 @@ export default function GlobalTaskInput() {
             )}>
                 <form onSubmit={handleAdd} className="flex gap-1.5 sm:gap-2 items-center">
                     <div className="flex-1 flex items-center bg-transparent border-none focus-within:ring-0 min-w-0">
-                        {selectedTask && (
-                            <div className={cn(
-                                "flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-md border text-[10px] font-mono shrink-0 max-w-[140px] sm:max-w-[160px] shadow-xs animate-in fade-in slide-in-from-left-2 ml-1.5",
-                                parentIsGrocery
-                                    ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-800 dark:text-emerald-300"
-                                    : "bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300"
-                            )}>
-                                {parentIsGrocery ? <ShoppingCart size={10} /> : <CornerDownRight size={10} />}
-                                <span className="truncate flex-1">{selectedTask.title}</span>
-                                <button
-                                    type="button"
-                                    aria-label="Deselect parent task"
-                                    onClick={() => selectTask(null)}
-                                    className="p-0.5 hover:bg-black/10 dark:hover:bg-white/10 rounded-sm transition-colors ml-1"
-                                >
-                                    <X size={12} />
-                                </button>
-                            </div>
-                        )}
                         <Input
                             id="global-task-input"
                             ref={inputRef}
@@ -199,54 +213,56 @@ export default function GlobalTaskInput() {
                             onChange={(e) => setTitle(e.target.value)}
                             placeholder={
                                 parentIsGrocery
-                                    ? "Add items (e.g. 2x Milk, Eggs (12), Bread)..."
+                                    ? `Add items to ${selectedTask?.title} (e.g. 2x Milk, Eggs)...`
                                     : groceryModeToggle
                                     ? "New grocery list name or items (Milk, Eggs)..."
                                     : selectedTask
-                                    ? "Add sub-task..."
+                                    ? `Add sub-task to ${selectedTask.title}...`
                                     : "Add task to root..."
                             }
                             autoComplete="off"
-                            className="h-11 sm:h-12 border-none bg-transparent focus-visible:ring-0 text-sm sm:text-base font-mono flex-1"
+                            className="h-11 sm:h-12 border-none bg-transparent focus-visible:ring-0 text-sm sm:text-base font-mono flex-1 min-w-0"
                         />
                     </div>
 
-                    {/* Dedicated Grocery Mode Toggle Button */}
-                    <button
-                        type="button"
-                        aria-label={effectiveGroceryMode ? "Grocery list mode active" : "Switch to Grocery List mode"}
-                        aria-pressed={effectiveGroceryMode}
-                        onClick={() => {
-                            if (parentIsGrocery) {
-                                selectTask(null);
-                                setGroceryModeToggle(false);
-                            } else {
-                                setGroceryModeToggle(prev => !prev);
-                                inputRef.current?.focus();
+                    {/* Dedicated Grocery Mode Toggle Button (shown at root or when inside a grocery list) */}
+                    {(!selectedTask || parentIsGrocery) && (
+                        <button
+                            type="button"
+                            aria-label={effectiveGroceryMode ? "Grocery list mode active" : "Switch to Grocery List mode"}
+                            aria-pressed={effectiveGroceryMode}
+                            onClick={() => {
+                                if (parentIsGrocery) {
+                                    selectTask(null);
+                                    setGroceryModeToggle(false);
+                                } else {
+                                    setGroceryModeToggle(prev => !prev);
+                                    inputRef.current?.focus();
+                                }
+                            }}
+                            className={cn(
+                                "h-11 w-11 sm:h-12 sm:w-12 flex items-center justify-center rounded-lg border transition-all shadow-xs shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
+                                effectiveGroceryMode
+                                    ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-500"
+                                    : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-500/25 hover:scale-105 active:scale-95"
+                            )}
+                            title={
+                                parentIsGrocery
+                                    ? `Adding to Grocery List "${selectedTask?.title}" (Click to exit)`
+                                    : groceryModeToggle
+                                    ? "Grocery List Mode ON: Type a list name (e.g. Trader Joe's) or comma-separated items (2x Milk, Eggs)"
+                                    : "Create a Grocery List or add shopping items"
                             }
-                        }}
-                        className={cn(
-                            "h-11 w-11 sm:h-12 sm:w-12 flex items-center justify-center rounded-lg border transition-all shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
-                            effectiveGroceryMode
-                                ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-500 scale-105"
-                                : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-500/25 hover:scale-105 active:scale-95"
-                        )}
-                        title={
-                            parentIsGrocery
-                                ? `Adding to Grocery List "${selectedTask?.title}" (Click to exit)`
-                                : groceryModeToggle
-                                ? "Grocery List Mode ON: Type a list name (e.g. Trader Joe's) or comma-separated items (2x Milk, Eggs)"
-                                : "Create a Grocery List or add shopping items"
-                        }
-                    >
-                        <ShoppingCart size={18} />
-                    </button>
+                        >
+                            <ShoppingCart size={18} />
+                        </button>
+                    )}
 
                     <button
                         type="button"
                         aria-label="Decompose goal or generate grocery recipe with AI"
                         onClick={() => setIsDecomposeOpen(true)}
-                        className="h-11 w-11 sm:h-12 sm:w-12 flex items-center justify-center rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:scale-105 active:scale-95 transition-transform shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                        className="h-11 w-11 sm:h-12 sm:w-12 flex items-center justify-center rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:scale-105 active:scale-95 transition-transform shadow-xs shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                         title={effectiveGroceryMode ? "AI Recipe-to-Grocery: Generate ingredients from a meal name" : "AI Sparkle: Decompose goal into subtasks & print checklist"}
                     >
                         <Sparkles size={18} />
@@ -255,7 +271,7 @@ export default function GlobalTaskInput() {
                         type="submit"
                         aria-label={effectiveGroceryMode ? "Add grocery list or items" : "Add task"}
                         className={cn(
-                            "h-11 w-11 sm:h-12 sm:w-12 flex items-center justify-center rounded-lg hover:scale-105 active:scale-95 transition-transform shadow-md focus-visible:outline-none focus-visible:ring-2",
+                            "h-11 w-11 sm:h-12 sm:w-12 flex items-center justify-center rounded-lg hover:scale-105 active:scale-95 transition-transform shadow-md shrink-0 focus-visible:outline-none focus-visible:ring-2",
                             effectiveGroceryMode
                                 ? "bg-emerald-700 dark:bg-emerald-500 text-white dark:text-zinc-950 focus-visible:ring-emerald-500"
                                 : "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 focus-visible:ring-zinc-900 dark:focus-visible:ring-zinc-100"
