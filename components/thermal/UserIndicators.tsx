@@ -10,8 +10,17 @@ export function UserIndicators() {
     const activeFilters = useTaskStore(state => state.activeFilters);
     const setCreatorFilter = useTaskStore(state => state.setCreatorFilter);
 
+    if (creators.length === 0) return null;
+
     return (
-        <div className="flex items-center gap-3" role="group" aria-label="Filter by collaborator">
+        <div
+            className={cn(
+                "items-center gap-2",
+                creators.length <= 1 ? "hidden md:flex" : "flex"
+            )}
+            role="group"
+            aria-label="Filter by collaborator"
+        >
             <div className="flex -space-x-1 p-1">
                 {creators.map((email: string) => {
                     const color = getUserColor(email);

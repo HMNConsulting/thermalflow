@@ -79,7 +79,7 @@ const StickyNote = memo(({ taskId, depth = 0 }: StickyNoteProps) => {
                 "will-change-transform contain-content content-visibility-auto"
             )}
         >
-            {/* Handwriting feel title */}
+            {/* Task title */}
             <div className="flex items-start gap-2.5 mb-2">
                 <div
                     onClick={(e) => e.stopPropagation()}
@@ -92,7 +92,7 @@ const StickyNote = memo(({ taskId, depth = 0 }: StickyNoteProps) => {
                     />
                 </div>
                 <h3 className={cn(
-                    "font-handwriting text-xl leading-snug break-words mr-6 text-zinc-900 dark:text-zinc-100",
+                    "font-mono text-sm sm:text-base font-medium leading-snug break-words mr-6 text-zinc-900 dark:text-zinc-100",
                     task.completed && "line-through opacity-60"
                 )}>
                     {task.title}

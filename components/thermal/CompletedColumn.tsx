@@ -2,17 +2,31 @@
 
 import { useTaskStore } from "@/lib/store";
 import { useMemo, useState } from "react";
-import { CheckCircle2, RotateCcw } from "lucide-react";
+import { CheckCircle2, RotateCcw, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 
 export function CompletedColumn() {
     const tasks = useTaskStore(state => state.tasks);
     const toggleTask = useTaskStore(state => state.toggleTask);
+    const clearCompletedTasks = useTaskStore(state => state.clearCompletedTasks);
     const activeFilters = useTaskStore(state => state.activeFilters);
 
     const completedTasks = useMemo(() => {
+        const reachable = new Set<string>();
+        const stack = [...(tasks['root']?.children || [])];
+        while (stack.length > 0) {
+            const id = stack.pop()!;
+            if (reachable.has(id)) continue;
+            reachable.add(id);
+            const t = tasks[id];
+            if (t && Array.isArray(t.children)) {
+                t.children.forEach(cid => stack.push(cid));
+            }
+        }
+
         return Object.values(tasks)
-            .filter(t => t.completed && t.id !== 'root')
+            .filter(t => t.completed && t.id !== 'root' && reachable.has(t.id))
             .filter(t => !activeFilters.creator || t.createdBy === activeFilters.creator)
             .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
     }, [tasks, activeFilters.creator]);
@@ -46,9 +60,12 @@ export function CompletedColumn() {
                 onDrop={handleDrop}
                 className={`w-80 flex-shrink-0 flex flex-col h-full bg-zinc-50/50 dark:bg-zinc-900/50 border-l border-dashed border-zinc-200 dark:border-zinc-800 transition-colors ${isOver ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-400' : ''}`}
             >
-                <div className="flex items-center gap-2 px-4 h-14 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0 w-full">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-400">Completed</h2>
+                <div className="flex items-center justify-between px-4 h-14 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0 w-full">
+                    <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-400">Completed</h2>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">Auto-clears 24h</span>
                 </div>
                 <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 dark:text-zinc-400 text-xs font-mono px-6 text-center gap-1.5">
                     <span className="font-bold uppercase tracking-wider">{isOver ? 'Drop to Complete' : 'No Completed Tasks'}</span>
@@ -69,8 +86,25 @@ export function CompletedColumn() {
         >
             <div className="flex items-center gap-2 px-4 h-14 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0 w-full">
                 <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-400">Completed</h2>
-                <span className="ml-auto text-[10px] text-zinc-500 dark:text-zinc-400 font-mono">{completedTasks.length} Done</span>
+                <div className="flex flex-col">
+                    <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-400 leading-none">Completed</h2>
+                    <span className="text-[9px] text-zinc-400 dark:text-zinc-500 font-mono mt-0.5">Auto-clears after 24h</span>
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                    <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-mono">{completedTasks.length} Done</span>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            clearCompletedTasks();
+                            toast.success("Cleared completed tasks");
+                        }}
+                        className="p-1.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 hover:text-red-600 dark:hover:text-red-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                        title="Clear all completed tasks now"
+                        aria-label="Clear all completed tasks"
+                    >
+                        <Trash2 size={13} />
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 pb-32">

@@ -57,59 +57,82 @@ function loadData() {
 }
 
 function runGC(state) {
-    const RETENTION_DAYS = 7;
-    const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const RETENTION_HOURS = 24;
+    const RETENTION_MS = RETENTION_HOURS * 60 * 60 * 1000;
     const now = Date.now();
 
-    // 1. Identify tasks that MUST be kept (incomplete or ancestors of incomplete)
-    const taskIdsToKeep = new Set(['root']);
+    if (!state || !state.tasks || !state.tasks.root) return state;
+
+    const tasksToRemove = new Set();
+
+    // 1. Mark expired completed tasks (completed > 24h ago) and their entire subtrees for removal
     Object.values(state.tasks).forEach(task => {
-        if (!task.completed) {
-            let current = task;
-            while (current) {
-                if (taskIdsToKeep.has(current.id)) break;
-                taskIdsToKeep.add(current.id);
-                current = current.parentId ? state.tasks[current.parentId] : null;
+        if (!task || task.id === 'root' || task.recurrence) return;
+
+        if (task.completed) {
+            const completedAt = typeof task.completedAt === 'string'
+                ? new Date(task.completedAt).getTime()
+                : task.completedAt;
+
+            if (!completedAt || (now - completedAt) > RETENTION_MS) {
+                const stack = [task.id];
+                while (stack.length > 0) {
+                    const cid = stack.pop();
+                    if (!cid || tasksToRemove.has(cid)) continue;
+                    tasksToRemove.add(cid);
+                    const childTask = state.tasks[cid];
+                    if (childTask && Array.isArray(childTask.children)) {
+                        childTask.children.forEach(subId => stack.push(subId));
+                    }
+                }
             }
         }
     });
 
-    // 2. Identify candidates for removal (completed > 7 days AND not in keep set)
-    const tasksToRemove = new Set();
-    Object.values(state.tasks).forEach(task => {
-        if (taskIdsToKeep.has(task.id)) return;
+    // 2. Find all tasks reachable from 'root' (excluding tasks marked for removal)
+    const reachable = new Set(['root']);
+    const visitStack = [...(state.tasks.root.children || [])];
+    while (visitStack.length > 0) {
+        const currId = visitStack.pop();
+        if (!currId || reachable.has(currId) || tasksToRemove.has(currId)) continue;
+        const currTask = state.tasks[currId];
+        if (!currTask) continue;
+        reachable.add(currId);
+        if (Array.isArray(currTask.children)) {
+            currTask.children.forEach(cid => visitStack.push(cid));
+        }
+    }
 
-        const completedAt = typeof task.completedAt === 'string'
-            ? new Date(task.completedAt).getTime()
-            : task.completedAt;
-
-        if (task.completed && completedAt && (now - completedAt) > RETENTION_MS) {
-            tasksToRemove.add(task.id);
+    // 3. Any task not reachable from root is an orphan -> mark for removal
+    Object.keys(state.tasks).forEach(id => {
+        if (!reachable.has(id)) {
+            tasksToRemove.add(id);
         }
     });
 
-    if (tasksToRemove.size === 0) return state;
-
-    console.log(`GC: Removing ${tasksToRemove.size} old completed tasks`);
-
-    const newTasks = { ...state.tasks };
-    tasksToRemove.forEach(id => {
-        const task = newTasks[id];
-        if (task && task.parentId && newTasks[task.parentId]) {
-            newTasks[task.parentId] = {
-                ...newTasks[task.parentId],
-                children: newTasks[task.parentId].children.filter(cid => cid !== id)
-            };
+    // 4. Also check if any reachable task has dangling child IDs in .children
+    let childrenCleaned = false;
+    const newTasks = {};
+    reachable.forEach(id => {
+        const task = state.tasks[id];
+        if (!task) return;
+        const rawChildren = Array.isArray(task.children) ? task.children : [];
+        const validChildren = rawChildren.filter(cid => reachable.has(cid) && !tasksToRemove.has(cid));
+        if (validChildren.length !== rawChildren.length) {
+            childrenCleaned = true;
+            newTasks[id] = { ...task, children: validChildren };
+        } else {
+            newTasks[id] = task;
         }
     });
 
-    tasksToRemove.forEach(id => {
-        delete newTasks[id];
-    });
+    if (tasksToRemove.size === 0 && !childrenCleaned) return state;
+
+    console.log(`GC: Removed ${tasksToRemove.size} expired/orphaned task(s)`);
 
     const newState = {
         ...state,
-        version: state.version + 1,
+        version: (state.version || 1) + 1,
         tasks: newTasks,
         lastModified: now
     };
@@ -358,16 +381,21 @@ cron.schedule('* * * * *', () => {
         masterState.version++;
         masterState.lastModified = now;
         saveData(masterState);
-        // We need Io instance here. It is inside app.prepare()...
-        // Issue: 'io' is not global.
-        // Quick fix: generic broadcast function or move io to outer scope.
         if (global.io) {
-            global.io.emit('sync:patch', {
+            global.io.emit('sync:patched', {
                 tasks: updates,
                 version: masterState.version,
                 lastModified: masterState.lastModified
             });
         }
+    }
+
+    // Periodically purge completed tasks older than 24h & any orphaned tasks
+    const prevVersion = masterState.version;
+    masterState = runGC(masterState);
+    if (masterState.version !== prevVersion && global.io) {
+        const { geminiApiKey, mcpOAuth, ...publicState } = masterState;
+        global.io.emit('sync:broadcast', publicState);
     }
 });
 

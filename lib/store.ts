@@ -69,6 +69,7 @@ interface TaskStore {
     setTaskPriority: (id: string, priority?: 'normal' | 'high' | 'urgent') => void;
     setTaskRecurrence: (id: string, recurrence: Task['recurrence'] | undefined) => void;
     deleteTask: (id: string) => void;
+    clearCompletedTasks: () => void;
     assignTask: (id: string, newCreator: string) => void;
     setPath: (path: string[]) => void;
     navigateTo: (id: string) => void;
@@ -606,7 +607,18 @@ export const useTaskStore = create<TaskStore>()(
                     }
 
                     const newTasks = { ...state.tasks };
-                    delete newTasks[id];
+                    const deletedIds: string[] = [];
+                    const stack = [id];
+                    while (stack.length > 0) {
+                        const currId = stack.pop()!;
+                        if (deletedIds.includes(currId)) continue;
+                        deletedIds.push(currId);
+                        const currTask = newTasks[currId];
+                        if (currTask && Array.isArray(currTask.children)) {
+                            currTask.children.forEach(cid => stack.push(cid));
+                        }
+                        delete newTasks[currId];
+                    }
 
                     const updatedParent = {
                         ...newTasks[parent.id],
@@ -628,10 +640,66 @@ export const useTaskStore = create<TaskStore>()(
                         lastModified: Date.now(),
                         lastAction: 'delete' as const
                     };
-                    broadcastPatch({ [parent.id]: updatedParent }, [id]);
+                    broadcastPatch({ [parent.id]: updatedParent }, deletedIds);
                     return newState;
 
                 })
+            },
+
+            clearCompletedTasks: () => {
+                set((state) => {
+                    const newTasks = { ...state.tasks };
+                    const deletedIds: string[] = [];
+                    const changedParents: Record<string, Task> = {};
+
+                    // Collect all completed tasks (excluding root) and their subtrees
+                    Object.values(state.tasks).forEach(task => {
+                        if (task.id !== INITIAL_ROOT_ID && task.completed) {
+                            const stack = [task.id];
+                            while (stack.length > 0) {
+                                const cid = stack.pop()!;
+                                if (deletedIds.includes(cid)) continue;
+                                deletedIds.push(cid);
+                                const t = state.tasks[cid];
+                                if (t && Array.isArray(t.children)) {
+                                    t.children.forEach(subId => stack.push(subId));
+                                }
+                            }
+                        }
+                    });
+
+                    if (deletedIds.length === 0) return state;
+
+                    const deletedSet = new Set(deletedIds);
+                    deletedIds.forEach(id => {
+                        delete newTasks[id];
+                    });
+
+                    Object.values(newTasks).forEach(task => {
+                        if (Array.isArray(task.children) && task.children.some(cid => deletedSet.has(cid))) {
+                            const updated = {
+                                ...task,
+                                children: task.children.filter(cid => !deletedSet.has(cid))
+                            };
+                            newTasks[task.id] = updated;
+                            changedParents[task.id] = updated;
+                        }
+                    });
+
+                    const newState = {
+                        ...state,
+                        tasks: newTasks,
+                        undoStack: [...state.undoStack.slice(-25), state.tasks],
+                        redoStack: [],
+                        canUndo: true,
+                        canRedo: false,
+                        lastModified: Date.now(),
+                        lastAction: 'delete' as const
+                    };
+
+                    broadcastPatch(changedParents, deletedIds);
+                    return newState;
+                });
             },
 
             assignTask: (id, newCreator) => {
@@ -884,11 +952,27 @@ export const useUniqueCreators = () => {
     return useTaskStore(
         useShallow((state) => {
             const set = new Set<string>();
-            Object.values(state.tasks).forEach((t) => {
-                const creator = t.createdBy || 'local';
-                if (creator !== 'system') set.add(creator);
-            });
-            if (state.currentUser) set.add(state.currentUser);
+            const visited = new Set<string>(['root']);
+            const stack = [...(state.tasks['root']?.children || [])];
+
+            while (stack.length > 0) {
+                const id = stack.pop()!;
+                if (visited.has(id)) continue;
+                visited.add(id);
+                const t = state.tasks[id];
+                if (!t) continue;
+                const creator = t.createdBy;
+                if (creator && creator !== 'system' && creator !== 'local' && creator !== 'api' && creator !== 'gemini-mcp') {
+                    set.add(creator);
+                }
+                if (Array.isArray(t.children)) {
+                    t.children.forEach(cid => stack.push(cid));
+                }
+            }
+
+            if (state.currentUser && state.currentUser !== 'local' && state.currentUser !== 'system') {
+                set.add(state.currentUser);
+            }
             return Array.from(set).sort();
         })
     );

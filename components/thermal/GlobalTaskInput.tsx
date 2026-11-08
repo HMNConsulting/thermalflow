@@ -126,7 +126,7 @@ export default function GlobalTaskInput() {
                             onChange={(e) => setTitle(e.target.value)}
                             placeholder={selectedTask ? `Add sub-task...` : "Add task to root..."}
                             autoComplete="off"
-                            className="h-11 sm:h-12 border-none bg-transparent focus-visible:ring-0 text-lg font-handwriting flex-1"
+                            className="h-11 sm:h-12 border-none bg-transparent focus-visible:ring-0 text-sm sm:text-base font-mono flex-1"
                         />
                     </div>
                     <button
