@@ -14,7 +14,7 @@ export default async function Home() {
   return (
     <main className="h-[100dvh] w-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 overflow-hidden font-mono">
       <UserInitializer email={userEmail} />
-      <header className="h-14 border-b border-zinc-200 dark:border-zinc-800 flex justify-between md:grid md:grid-cols-3 items-center px-3 sm:px-4 md:px-6 flex-shrink-0 bg-white dark:bg-zinc-950 z-10 gap-2">
+      <header className="h-14 border-b border-zinc-200 dark:border-zinc-800 flex justify-between md:grid md:grid-cols-3 items-center px-3 sm:px-4 md:px-6 flex-shrink-0 bg-white dark:bg-zinc-950 relative z-40 gap-2">
         {/* Left Side: Brand & Mode */}
         <div className="flex items-center gap-2 sm:gap-3 justify-self-start min-w-0">
           <HeaderInfo />
@@ -39,4 +39,3 @@ export default async function Home() {
     </main>
   );
 }
-

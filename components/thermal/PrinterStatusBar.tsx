@@ -262,11 +262,11 @@ export function PrinterStatusBar() {
             {/* Dropdown Popover */}
             {isOpen && (
                 <>
-                    <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+                    <div className="fixed inset-0 z-40 bg-black/15 sm:bg-transparent" onClick={() => setIsOpen(false)} />
                     <div
                         role="dialog"
                         aria-label="Hardware and Chits Settings"
-                        className="fixed left-4 right-4 top-16 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-72 bg-card border border-zinc-200 dark:border-zinc-800 shadow-2xl rounded-xl p-3 z-50 font-mono text-xs text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150"
+                        className="fixed left-3 right-3 top-16 max-h-[calc(100dvh-5rem)] overflow-y-auto sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl rounded-xl p-3.5 z-50 font-mono text-xs text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-150"
                     >
                         <div className="flex items-center justify-between pb-2 border-b border-zinc-100 dark:border-zinc-800 mb-3">
                             <div className="flex items-center gap-2">
@@ -286,13 +286,13 @@ export function PrinterStatusBar() {
 
                         {/* Status Summary */}
                         <div className="bg-zinc-50 dark:bg-zinc-950 p-2.5 rounded-lg mb-3 border border-zinc-200 dark:border-zinc-800 text-[11px] space-y-1">
-                            <div className="flex justify-between">
+                            <div className="flex justify-between gap-2">
                                 <span className="text-zinc-500 dark:text-zinc-400">Status:</span>
-                                <span className={cn("font-bold", isOnline ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
+                                <span className={cn("font-bold text-right", isOnline ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
                                     {isOnline ? 'Online (ESC/POS USB)' : 'Simulated Audio'}
                                 </span>
                             </div>
-                            <div className="flex justify-between">
+                            <div className="flex justify-between gap-2">
                                 <span className="text-zinc-500 dark:text-zinc-400">Queue:</span>
                                 <span>{queueLength} pending</span>
                             </div>
@@ -348,7 +348,7 @@ export function PrinterStatusBar() {
 
                         {/* Gemini AI Configuration */}
                         <div className="pt-2.5 mt-2 border-t border-zinc-100 dark:border-zinc-800 mb-3">
-                            <div className="flex items-center justify-between mb-1.5 px-1">
+                            <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5 px-1">
                                 <label htmlFor="gemini-api-key-input" className="flex items-center gap-1.5 cursor-pointer">
                                     <Sparkles size={12} className="text-amber-500" />
                                     <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-600 dark:text-zinc-400">Gemini API Key</span>
@@ -370,7 +370,7 @@ export function PrinterStatusBar() {
                                 )}
                             </div>
                             {geminiConfig?.keyError && (
-                                <div className="mb-1.5 px-2 py-1.5 rounded bg-red-500/10 border border-red-500/25 text-[10px] text-red-700 dark:text-red-300 leading-snug">
+                                <div className="mb-1.5 px-2 py-1.5 rounded bg-red-500/10 border border-red-500/25 text-[10px] text-red-700 dark:text-red-300 leading-snug break-words">
                                     {geminiConfig.keyError}
                                 </div>
                             )}
